@@ -69,7 +69,7 @@ async def main():
     conv = chak.Conversation(
         "bailian/qwen-plus",
         api_key=api_key,
-        system=SYSTEM_PROMPT,
+        system_message=SYSTEM_PROMPT,
         tools=[
             simulate_rag_search,
             user_info_collector,
