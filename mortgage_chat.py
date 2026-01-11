@@ -71,9 +71,9 @@ async def main():
         api_key=api_key,
         system=SYSTEM_PROMPT,
         tools=[
-            simulate_rag_search,      # 优先级最高：知识库搜索
-            user_info_collector,       # 优先级中：用户信息搜集
-            simulate_web_search        # 优先级最低：网络搜索
+            simulate_rag_search,
+            user_info_collector,
+            simulate_web_search
         ]
     )
     
@@ -87,12 +87,6 @@ async def main():
             if user_input.lower() in ['exit', 'quit', '退出']:
                 print("\n感谢您的咨询，祝您贷款申请顺利！")
                 break
-            
-            # 检查信息查询命令
-            if user_input.lower() == 'info':
-                print("\n" + user_info_collector.get_all_info())
-                print(user_info_collector.get_missing_fields())
-                continue
             
             # 跳过空输入
             if not user_input:
