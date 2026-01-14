@@ -22,7 +22,7 @@ console = Console()
 
 # Configuration
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
+QDRANT_PORT = int(os.getenv("QDRANT_PORT", "16333"))
 COLLECTION_NAME = "mortgage_guidelines"
 
 
