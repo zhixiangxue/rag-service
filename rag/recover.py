@@ -37,6 +37,31 @@ def check_collection_exists():
         return False
 
 
+def create_collection():
+    """Create an empty collection for snapshot recovery"""
+    url = f"http://{QDRANT_HOST}:{QDRANT_PORT}/collections/{COLLECTION_NAME}"
+    
+    console.print(f"\n[cyan]Creating collection '{COLLECTION_NAME}'...[/cyan]")
+    
+    # Create a minimal collection configuration
+    # The actual schema will be overwritten by the snapshot
+    payload = {
+        "vectors": {
+            "size": 1536,  # Placeholder, will be replaced by snapshot
+            "distance": "Cosine"
+        }
+    }
+    
+    try:
+        response = requests.put(url, json=payload, timeout=30)
+        response.raise_for_status()
+        console.print(f"[green]✓ Collection created[/green]")
+        return True
+    except requests.exceptions.RequestException as e:
+        console.print(f"[red]❌ Failed to create collection: {e}[/red]")
+        raise
+
+
 def upload_snapshot(snapshot_file: Path):
     """Upload snapshot file to Qdrant server"""
     url = f"http://{QDRANT_HOST}:{QDRANT_PORT}/collections/{COLLECTION_NAME}/snapshots/upload"
@@ -176,13 +201,23 @@ def main():
         return
     
     # Check if collection exists
-    if check_collection_exists():
+    collection_exists = check_collection_exists()
+    
+    if collection_exists:
         console.print(f"\n[yellow]⚠ Warning: Collection '{COLLECTION_NAME}' already exists[/yellow]")
         console.print(f"[yellow]Recovery will overwrite the existing collection[/yellow]")
         
         confirm = console.input("\n[bold]Continue? (yes/no): [/bold]").strip().lower()
         if confirm not in ['yes', 'y']:
             console.print("\n[yellow]Recovery cancelled[/yellow]")
+            return
+    else:
+        # Create collection if it doesn't exist
+        console.print(f"\n[cyan]Collection '{COLLECTION_NAME}' does not exist[/cyan]")
+        try:
+            create_collection()
+        except Exception as e:
+            console.print(f"[red]❌ Failed to create collection: {e}[/red]")
             return
     
     try:
