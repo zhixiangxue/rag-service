@@ -62,11 +62,12 @@ def create_collection():
         raise
 
 
-def upload_snapshot(snapshot_file: Path):
-    """Upload snapshot file to Qdrant server"""
-    url = f"http://{QDRANT_HOST}:{QDRANT_PORT}/collections/{COLLECTION_NAME}/snapshots/upload"
+def recover_from_snapshot_direct(snapshot_file: Path):
+    """Recover collection directly by uploading to snapshots directory"""
+    # Alternative approach: Upload to global snapshots endpoint
+    url = f"http://{QDRANT_HOST}:{QDRANT_PORT}/snapshots/upload"
     
-    console.print(f"\n[cyan]Uploading snapshot...[/cyan]")
+    console.print(f"\n[cyan]Uploading snapshot (global endpoint)...[/cyan]")
     console.print(f"[dim]File: {snapshot_file}[/dim]")
     console.print(f"[dim]Size: {snapshot_file.stat().st_size / (1024*1024):.2f} MB[/dim]\n")
     
@@ -81,7 +82,7 @@ def upload_snapshot(snapshot_file: Path):
             task = progress.add_task("Uploading...", total=snapshot_file.stat().st_size)
             
             with open(snapshot_file, 'rb') as f:
-                # Wrap file object to track upload progress
+                # Simple progress tracking
                 class ProgressFile:
                     def __init__(self, file, task_id, progress):
                         self.file = file
@@ -98,40 +99,35 @@ def upload_snapshot(snapshot_file: Path):
                         return getattr(self.file, name)
                 
                 progress_file = ProgressFile(f, task, progress)
-                files = {'snapshot': progress_file}
                 
-                response = requests.put(
+                # Upload to global snapshots
+                response = requests.post(
                     url,
-                    files=files,
-                    timeout=600  # 10 min timeout for large files
+                    files={'snapshot': (snapshot_file.name, progress_file, 'application/octet-stream')},
+                    timeout=600
                 )
                 response.raise_for_status()
+                
+                result = response.json()
+                uploaded_name = result.get('result', {}).get('name', snapshot_file.name)
         
-        console.print(f"[green]✓ Upload complete[/green]")
-        return True
+        console.print(f"[green]✓ Upload complete: {uploaded_name}[/green]")
         
-    except requests.exceptions.RequestException as e:
-        console.print(f"[red]❌ Failed to upload snapshot: {e}[/red]")
-        raise
-
-
-def recover_from_snapshot(snapshot_name: str):
-    """Recover collection from uploaded snapshot"""
-    url = f"http://{QDRANT_HOST}:{QDRANT_PORT}/collections/{COLLECTION_NAME}/snapshots/{snapshot_name}/recover"
-    
-    console.print(f"\n[cyan]Recovering collection from snapshot...[/cyan]")
-    console.print(f"[dim]This may take a while depending on the collection size[/dim]\n")
-    
-    try:
+        # Now recover from the uploaded snapshot
+        console.print(f"\n[cyan]Recovering collection from snapshot...[/cyan]")
+        recover_url = f"http://{QDRANT_HOST}:{QDRANT_PORT}/collections/{COLLECTION_NAME}/snapshots/{uploaded_name}/recover"
+        
         with console.status("[cyan]Recovering...[/cyan]", spinner="dots"):
-            response = requests.put(url, timeout=600)  # 10 min timeout
-            response.raise_for_status()
+            recover_response = requests.put(recover_url, json={"priority": "snapshot"}, timeout=600)
+            recover_response.raise_for_status()
         
         console.print(f"[green]✓ Collection recovered successfully[/green]")
         return True
         
     except requests.exceptions.RequestException as e:
-        console.print(f"[red]❌ Failed to recover from snapshot: {e}[/red]")
+        console.print(f"[red]❌ Failed: {e}[/red]")
+        if hasattr(e, 'response') and e.response:
+            console.print(f"[dim]Response: {e.response.text}[/dim]")
         raise
 
 
@@ -221,11 +217,8 @@ def main():
             return
     
     try:
-        # Step 1: Upload snapshot
-        upload_snapshot(snapshot_path)
-        
-        # Step 2: Recover from snapshot
-        recover_from_snapshot(snapshot_name)
+        # Step 1: Upload and recover in one go (using global endpoint)
+        recover_from_snapshot_direct(snapshot_path)
         
         # Step 3: Verify collection
         verify_collection()
