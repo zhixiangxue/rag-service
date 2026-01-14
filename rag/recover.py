@@ -63,11 +63,11 @@ def create_collection():
 
 
 def recover_from_snapshot_direct(snapshot_file: Path):
-    """Recover collection directly by uploading to snapshots directory"""
-    # Alternative approach: Upload to global snapshots endpoint
-    url = f"http://{QDRANT_HOST}:{QDRANT_PORT}/snapshots/upload"
+    """Recover collection directly by uploading snapshot (official API)"""
+    # Official Qdrant API: POST /collections/{name}/snapshots/upload?priority=snapshot
+    url = f"http://{QDRANT_HOST}:{QDRANT_PORT}/collections/{COLLECTION_NAME}/snapshots/upload?priority=snapshot"
     
-    console.print(f"\n[cyan]Uploading snapshot (global endpoint)...[/cyan]")
+    console.print(f"\n[cyan]Uploading snapshot to collection endpoint...[/cyan]")
     console.print(f"[dim]File: {snapshot_file}[/dim]")
     console.print(f"[dim]Size: {snapshot_file.stat().st_size / (1024*1024):.2f} MB[/dim]\n")
     
@@ -82,7 +82,7 @@ def recover_from_snapshot_direct(snapshot_file: Path):
             task = progress.add_task("Uploading...", total=snapshot_file.stat().st_size)
             
             with open(snapshot_file, 'rb') as f:
-                # Simple progress tracking
+                # Progress tracking wrapper
                 class ProgressFile:
                     def __init__(self, file, task_id, progress):
                         self.file = file
@@ -100,7 +100,7 @@ def recover_from_snapshot_direct(snapshot_file: Path):
                 
                 progress_file = ProgressFile(f, task, progress)
                 
-                # Upload to global snapshots
+                # Upload snapshot using official API
                 response = requests.post(
                     url,
                     files={'snapshot': (snapshot_file.name, progress_file, 'application/octet-stream')},
@@ -109,23 +109,13 @@ def recover_from_snapshot_direct(snapshot_file: Path):
                 response.raise_for_status()
                 
                 result = response.json()
-                uploaded_name = result.get('result', {}).get('name', snapshot_file.name)
+                console.print(f"[green]\u2713 Snapshot uploaded and restored successfully[/green]")
+                console.print(f"[dim]Response: {result}[/dim]")
         
-        console.print(f"[green]✓ Upload complete: {uploaded_name}[/green]")
-        
-        # Now recover from the uploaded snapshot
-        console.print(f"\n[cyan]Recovering collection from snapshot...[/cyan]")
-        recover_url = f"http://{QDRANT_HOST}:{QDRANT_PORT}/collections/{COLLECTION_NAME}/snapshots/{uploaded_name}/recover"
-        
-        with console.status("[cyan]Recovering...[/cyan]", spinner="dots"):
-            recover_response = requests.put(recover_url, json={"priority": "snapshot"}, timeout=600)
-            recover_response.raise_for_status()
-        
-        console.print(f"[green]✓ Collection recovered successfully[/green]")
         return True
         
     except requests.exceptions.RequestException as e:
-        console.print(f"[red]❌ Failed: {e}[/red]")
+        console.print(f"[red]\u274c Failed: {e}[/red]")
         if hasattr(e, 'response') and e.response:
             console.print(f"[dim]Response: {e.response.text}[/dim]")
         raise
