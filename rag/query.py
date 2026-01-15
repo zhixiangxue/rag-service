@@ -273,7 +273,16 @@ async def query_loop():
             
             for i, result in enumerate(results, 1):
                 # Analyze relevance
-                analysis = await analyze_relevance(query, result.content)
+                try:
+                    analysis = await analyze_relevance(query, result.content)
+                except Exception as e:
+                    console.print(f"[yellow]⚠ 结果 {i} 质量分析失败: {e}[/yellow]")
+                    analysis = RelevanceAnalysis(
+                        is_relevant=True,
+                        confidence="unknown",
+                        reason="质量分析失败，无法评估相关性",
+                        relevant_excerpts=[]
+                    )
                 
                 # Display result with analysis
                 display_result(result, i, analysis)
