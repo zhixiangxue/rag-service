@@ -42,7 +42,7 @@
         }
 
         .header {
-            text-align: center;
+            text-align: left;
             margin-bottom: 60px;
             padding-bottom: 30px;
             border-bottom: 1px solid var(--color-border);
@@ -57,9 +57,10 @@
 
         .header p {
             color: var(--color-text-secondary);
-            font-size: 0.95rem;
+            font-size: 0.9rem;
             font-weight: 300;
-            margin-bottom: 16px;
+            margin-bottom: 8px;
+            line-height: 1.8;
         }
 
         .download-link {
@@ -492,8 +493,11 @@
     <div class="container">
         <div class="header">
             <h1>RAG Query Demo</h1>
-            <p>1. Query takes ~20s due to LLM-based postprocessors (will be configurable in future releases, use <code>/query</code> API to skip them)</p>
-            <p>2. Download the test dataset to compare results with ground truth answers</p>
+            <p><strong>Performance Notice:</strong> Query takes ~20s, this is expected due to:</p>
+            <p style="margin-left: 20px;">1. LLM-based postprocessors are enabled (will be configurable in future releases)</p>
+            <p style="margin-left: 20px;">2. Vector database using HTTP connection (production will use gRPC, 10x+ faster)</p>
+            <p style="margin-left: 20px;">3. For faster queries without LLM analysis, use <code>/query</code> API endpoint</p>
+            <p style="margin-top: 16px;"><strong>Test Dataset:</strong> Download to compare with ground truth answers</p>
             <a href="/static/usda_pages_96-115.xlsx" download class="download-link">
                 📥 Download Test Dataset (USDA Pages 96-115)
             </a>
