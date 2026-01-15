@@ -199,17 +199,17 @@ async def query_loop():
             query = console.input("[bold green]问题:[/bold green] ").strip()
         except KeyboardInterrupt:
             console.print("\n\n[yellow]检测到 Ctrl+C，正在退出...[/yellow]")
-            console.print("👋 再见!\n")
+            console.print("👋 Bye!\n")
             break
         except EOFError:
-            console.print("\n\n👋 再见!")
+            console.print("\n\n👋 Bye!")
             break
         
         if not query:
             continue
         
         if query.lower() in ['quit', 'exit', 'q']:
-            console.print("\n👋 再见!")
+            console.print("\n👋 Bye!")
             break
         
         console.print("=" * 80)

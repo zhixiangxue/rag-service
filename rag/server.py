@@ -23,11 +23,8 @@ from zag.embedders import Embedder
 from zag.storages.vector import QdrantVectorStore
 from zag.retrievers import VectorRetriever
 
-# Load environment variables - search from current dir up to project root
-load_dotenv()
-env_file = Path(__file__).resolve().parents[2] / ".env"
-if env_file.exists():
-    load_dotenv(dotenv_path=env_file, override=True)
+# Load environment variables - auto-search from current dir up to project root
+load_dotenv(override=True)
 
 # Configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -179,13 +176,13 @@ User Query: {query}
 Retrieved Content:
 {content}
 
-请分析：
-1. 这段内容是否与查询相关？
-2. 相关度如何（高/中/低）？
-3. 为什么相关或不相关？
-4. 如果相关，请一字不改地摘录出相关的部分（可以多段）
+Please analyze:
+1. Is this content relevant to the query?
+2. What is the relevance level (high/medium/low)?
+3. Why is it relevant or not relevant?
+4. If relevant, extract the relevant excerpts verbatim (can be multiple segments)
 
-注意：摘录时必须完全按照原文，不要修改任何字词。
+Note: When extracting excerpts, copy the original text exactly without any modifications.
 """
         
         analysis = await conv.asend(analysis_prompt, returns=RelevanceAnalysis)

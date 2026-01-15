@@ -210,3 +210,5 @@ __marimo__/
 .DS*
 zag-examples/
 output/
+tmp/
+playground/
