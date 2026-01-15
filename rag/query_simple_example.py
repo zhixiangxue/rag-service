@@ -8,7 +8,7 @@ import requests
 import json
 
 # API endpoint
-API_URL = "http://localhost:8000/query"
+API_URL = "http://13.56.109.233:8000/query"
 
 # Query request
 query = "What optional documentation forms can a lender use to verify the income of a family looking to upsize to a larger home?"
