@@ -245,10 +245,16 @@ async def query_loop():
             
             # Step 2: LLM Selector
             start_selector = time.time()
-            with console.status("[cyan]步骤2: LLM Selector 数据剪枝...[/cyan]", spinner="dots"):
-                results = await selector.aprocess(query, results_reranked)
-            time_selector = time.time() - start_selector
-            console.print(f"[green]✓ 段落提取完成: 筛选出 {len(results)} 条相关结果 (耗时 {time_selector:.2f}s)[/green]")
+            try:
+                with console.status("[cyan]步骤2: LLM Selector 数据剪枝...[/cyan]", spinner="dots"):
+                    results = await selector.aprocess(query, results_reranked)
+                time_selector = time.time() - start_selector
+                console.print(f"[green]✓ 段落提取完成: 筛选出 {len(results)} 条相关结果 (耗时 {time_selector:.2f}s)[/green]")
+            except Exception as e:
+                time_selector = time.time() - start_selector
+                console.print(f"[yellow]⚠ LLM Selector 失败，跳过此步骤: {e}[/yellow]")
+                console.print(f"[yellow]→ 使用重排序结果继续流程 ({len(results_reranked)} 条结果)[/yellow]")
+                results = results_reranked
             console.print()
             
             # Total time
