@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG Query Demo</title>
+    <!-- Marked.js for Markdown rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --color-bg: #0a0a0a;
+            --color-surface: #1a1a1a;
+            --color-surface-hover: #252525;
+            --color-border: #333333;
+            --color-text-primary: #ffffff;
+            --color-text-secondary: #a0a0a0;
+            --color-text-dim: #666666;
+            --color-accent: #ffffff;
+            --color-success: #4ade80;
+            --color-warning: #fbbf24;
+            --color-error: #f87171;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: var(--color-bg);
+            color: var(--color-text-primary);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 60px;
+            padding-bottom: 30px;
+            border-bottom: 1px solid var(--color-border);
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            font-weight: 300;
+            letter-spacing: -0.02em;
+            margin-bottom: 12px;
+        }
+
+        .header p {
+            color: var(--color-text-secondary);
+            font-size: 0.95rem;
+            font-weight: 300;
+            margin-bottom: 16px;
+        }
+
+        .download-link {
+            display: inline-block;
+            margin-top: 12px;
+            padding: 8px 16px;
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            border-radius: 6px;
+            color: var(--color-text-secondary);
+            text-decoration: none;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+        }
+
+        .download-link:hover {
+            border-color: var(--color-accent);
+            color: var(--color-accent);
+        }
+
+        .search-section {
+            margin-bottom: 48px;
+        }
+
+        .search-box {
+            position: relative;
+            margin-bottom: 16px;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 18px 24px;
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            border-radius: 8px;
+            color: var(--color-text-primary);
+            font-size: 1rem;
+            transition: all 0.2s;
+        }
+
+        .search-input:focus {
+            outline: none;
+            border-color: var(--color-accent);
+            background: var(--color-surface-hover);
+        }
+
+        .search-input::placeholder {
+            color: var(--color-text-dim);
+        }
+
+        .search-btn {
+            width: 100%;
+            padding: 18px 24px;
+            background: var(--color-accent);
+            color: var(--color-bg);
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .search-btn:hover:not(:disabled) {
+            background: var(--color-text-secondary);
+        }
+
+        .search-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--color-text-secondary);
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+            border: 2px solid var(--color-border);
+            border-top-color: var(--color-accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .stats {
+            display: flex;
+            gap: 24px;
+            margin-bottom: 24px;
+            padding: 16px 0;
+            color: var(--color-text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .stat-label {
+            color: var(--color-text-dim);
+        }
+
+        .results-section {
+            display: none;
+        }
+
+        .results-section.active {
+            display: block;
+        }
+
+        .result-card {
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            border-radius: 8px;
+            padding: 28px;
+            margin-bottom: 20px;
+            transition: all 0.2s;
+        }
+
+        .result-card:hover {
+            border-color: var(--color-text-dim);
+        }
+
+        .result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--color-border);
+        }
+
+        .result-number {
+            font-size: 0.85rem;
+            color: var(--color-text-dim);
+            font-weight: 500;
+        }
+
+        .result-score {
+            font-size: 0.85rem;
+            color: var(--color-text-secondary);
+            font-family: 'Courier New', monospace;
+        }
+
+        .result-metadata {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+            padding: 16px;
+            background: var(--color-bg);
+            border-radius: 6px;
+        }
+
+        .metadata-item {
+            font-size: 0.85rem;
+        }
+
+        .metadata-label {
+            color: var(--color-text-dim);
+            margin-right: 8px;
+        }
+
+        .metadata-value {
+            color: var(--color-text-secondary);
+            word-break: break-word;
+        }
+
+        .metadata-value pre {
+            max-height: 150px;
+            overflow-y: auto;
+            font-size: 0.8rem;
+            line-height: 1.4;
+        }
+
+        .metadata-json-toggle {
+            display: inline-block;
+            margin-left: 8px;
+            color: var(--color-accent);
+            cursor: pointer;
+            font-size: 0.75rem;
+            text-decoration: underline;
+        }
+
+        .metadata-json-toggle:hover {
+            color: var(--color-text-primary);
+        }
+
+        .result-content {
+            margin-bottom: 20px;
+            line-height: 1.8;
+            color: var(--color-text-primary);
+            padding: 16px;
+            background: var(--color-bg);
+            border-left: 3px solid var(--color-accent);
+            border-radius: 4px;
+            position: relative;
+        }
+
+        .result-content::before {
+            content: '📄 Retrieved Content';
+            display: block;
+            font-size: 0.8rem;
+            color: var(--color-text-dim);
+            font-weight: 500;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        /* Markdown styles */
+        .result-content h1,
+        .result-content h2,
+        .result-content h3,
+        .result-content h4,
+        .result-content h5,
+        .result-content h6 {
+            margin-top: 20px;
+            margin-bottom: 12px;
+            font-weight: 600;
+            line-height: 1.3;
+        }
+
+        .result-content h1 { font-size: 1.8rem; }
+        .result-content h2 { font-size: 1.5rem; }
+        .result-content h3 { font-size: 1.3rem; }
+        .result-content h4 { font-size: 1.1rem; }
+
+        .result-content p {
+            margin-bottom: 12px;
+        }
+
+        .result-content ul,
+        .result-content ol {
+            margin-left: 24px;
+            margin-bottom: 12px;
+        }
+
+        .result-content li {
+            margin-bottom: 6px;
+        }
+
+        .result-content code {
+            background: var(--color-bg);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+
+        .result-content pre {
+            background: var(--color-bg);
+            padding: 12px;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin-bottom: 12px;
+        }
+
+        .result-content pre code {
+            padding: 0;
+            background: none;
+        }
+
+        .result-content blockquote {
+            border-left: 3px solid var(--color-border);
+            padding-left: 16px;
+            margin-left: 0;
+            margin-bottom: 12px;
+            color: var(--color-text-secondary);
+        }
+
+        .result-content table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 12px;
+        }
+
+        .result-content th,
+        .result-content td {
+            border: 1px solid var(--color-border);
+            padding: 8px 12px;
+            text-align: left;
+        }
+
+        .result-content th {
+            background: var(--color-bg);
+            font-weight: 600;
+        }
+
+        .result-analysis {
+            padding: 16px;
+            background: var(--color-bg);
+            border-radius: 6px;
+            border: 1px dashed var(--color-border);
+            position: relative;
+        }
+
+        .result-analysis::before {
+            content: '🤖 GPT Quality Assessment';
+            display: block;
+            font-size: 0.75rem;
+            color: var(--color-text-dim);
+            font-weight: 500;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .result-analysis::after {
+            content: 'Note: This analysis is for reference only and not part of RAG output';
+            display: block;
+            font-size: 0.7rem;
+            color: var(--color-text-dim);
+            margin-top: 12px;
+            font-style: italic;
+            opacity: 0.7;
+        }
+
+        .analysis-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+        }
+
+        .analysis-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .analysis-label {
+            color: var(--color-text-dim);
+            margin-right: 12px;
+            min-width: 60px;
+        }
+
+        .analysis-value {
+            color: var(--color-text-secondary);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+
+        .badge-success {
+            background: rgba(74, 222, 128, 0.15);
+            color: var(--color-success);
+        }
+
+        .badge-error {
+            background: rgba(248, 113, 113, 0.15);
+            color: var(--color-error);
+        }
+
+        .badge-high {
+            background: rgba(74, 222, 128, 0.15);
+            color: var(--color-success);
+        }
+
+        .badge-medium {
+            background: rgba(251, 191, 36, 0.15);
+            color: var(--color-warning);
+        }
+
+        .badge-low {
+            background: rgba(248, 113, 113, 0.15);
+            color: var(--color-error);
+        }
+
+        .badge-unknown {
+            background: rgba(160, 160, 160, 0.15);
+            color: var(--color-text-secondary);
+        }
+
+        .excerpts {
+            margin-top: 12px;
+        }
+
+        .excerpts-title {
+            color: var(--color-text-dim);
+            font-size: 0.85rem;
+            margin-bottom: 8px;
+        }
+
+        .excerpt-item {
+            padding: 8px 12px;
+            margin-bottom: 6px;
+            background: var(--color-surface);
+            border-left: 2px solid var(--color-border);
+            border-radius: 4px;
+            font-size: 0.9rem;
+            color: var(--color-text-secondary);
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--color-text-dim);
+        }
+
+        .empty-state-icon {
+            font-size: 3rem;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        .error-message {
+            background: rgba(248, 113, 113, 0.1);
+            border: 1px solid rgba(248, 113, 113, 0.3);
+            color: var(--color-error);
+            padding: 16px 20px;
+            border-radius: 8px;
+            margin-bottom: 24px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>RAG Query Demo</h1>
+            <p>1. Query takes ~20s due to LLM-based postprocessors (will be configurable in future releases, use <code>/query</code> API to skip them)</p>
+            <p>2. Download the test dataset to compare results with ground truth answers</p>
+            <a href="/static/usda_pages_96-115.xlsx" download class="download-link">
+                📥 Download Test Dataset (USDA Pages 96-115)
+            </a>
+        </div>
+
+        <div class="search-section">
+            <div class="search-box">
+                <input 
+                    type="text" 
+                    class="search-input" 
+                    id="queryInput" 
+                    placeholder="输入您的问题..."
+                    value="What optional documentation forms can a lender use to verify the income of a family looking to upsize to a larger home?"
+                    autocomplete="off"
+                />
+            </div>
+            <button class="search-btn" id="searchBtn">Search</button>
+        </div>
+
+        <div id="errorContainer"></div>
+        <div id="loadingContainer"></div>
+
+        <div class="results-section" id="resultsSection">
+            <div class="stats" id="statsContainer"></div>
+            <div id="resultsContainer"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE_URL = 'http://localhost:8000';
+        
+        const queryInput = document.getElementById('queryInput');
+        const searchBtn = document.getElementById('searchBtn');
+        const loadingContainer = document.getElementById('loadingContainer');
+        const errorContainer = document.getElementById('errorContainer');
+        const resultsSection = document.getElementById('resultsSection');
+        const statsContainer = document.getElementById('statsContainer');
+        const resultsContainer = document.getElementById('resultsContainer');
+
+        // Enter key to search
+        queryInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !searchBtn.disabled) {
+                handleSearch();
+            }
+        });
+
+        searchBtn.addEventListener('click', handleSearch);
+
+        async function handleSearch() {
+            const query = queryInput.value.trim();
+            if (!query) return;
+
+            // Reset UI
+            errorContainer.innerHTML = '';
+            resultsSection.classList.remove('active');
+            searchBtn.disabled = true;
+
+            // Show loading
+            loadingContainer.innerHTML = `
+                <div class="loading">
+                    <div class="loading-spinner"></div>
+                    <p style="margin-top: 16px;">Processing your query...</p>
+                </div>
+            `;
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/query/web`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query, top_k: 5 })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Request failed');
+                }
+
+                const data = await response.json();
+                displayResults(data);
+
+            } catch (error) {
+                displayError(error.message);
+            } finally {
+                loadingContainer.innerHTML = '';
+                searchBtn.disabled = false;
+            }
+        }
+
+        function displayError(message) {
+            errorContainer.innerHTML = `
+                <div class="error-message">
+                    <strong>Error:</strong> ${message}
+                </div>
+            `;
+        }
+
+        function displayResults(data) {
+            // Display stats
+            statsContainer.innerHTML = `
+                <div class="stat-item">
+                    <span class="stat-label">Results:</span>
+                    <span>${data.results.length}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Retrieval:</span>
+                    <span>${data.timing.retrieval.toFixed(2)}s</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Reranking:</span>
+                    <span>${data.timing.reranking.toFixed(2)}s</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Selector:</span>
+                    <span>${data.timing.selector.toFixed(2)}s</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Analysis:</span>
+                    <span>${data.timing.analysis.toFixed(2)}s</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Total:</span>
+                    <span><strong>${data.total_time.toFixed(2)}s</strong></span>
+                </div>
+            `;
+
+            // Display results
+            if (data.results.length === 0) {
+                resultsContainer.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">∅</div>
+                        <p>No results found</p>
+                    </div>
+                `;
+            } else {
+                resultsContainer.innerHTML = data.results.map((result, index) => 
+                    createResultCard(result, index + 1)
+                ).join('');
+                
+                // Render markdown content after cards are created
+                data.results.forEach((result, index) => {
+                    const contentDiv = resultsContainer.querySelectorAll('.result-content')[index];
+                    if (contentDiv) {
+                        contentDiv.innerHTML = renderMarkdown(result.content);
+                    }
+                });
+            }
+
+            resultsSection.classList.add('active');
+        }
+
+        function createResultCard(result, number) {
+            const relevanceBadge = result.analysis.is_relevant 
+                ? '<span class="badge badge-success">✓ Relevant</span>'
+                : '<span class="badge badge-error">✗ Not Relevant</span>';
+
+            const confidenceMap = {
+                'high': 'High',
+                'medium': 'Medium',
+                'low': 'Low',
+                'unknown': 'Unknown'
+            };
+            const confidenceClass = result.analysis.confidence.toLowerCase();
+            const confidenceLabel = confidenceMap[confidenceClass] || result.analysis.confidence;
+
+            const metadataHtml = result.metadata && Object.keys(result.metadata).length > 0
+                ? `
+                    <div class="result-metadata">
+                        ${Object.entries(result.metadata).map(([key, value]) => {
+                            // Format value: if it's object/array, show compact preview with expand option
+                            let displayValue = value;
+                            if (typeof value === 'object' && value !== null) {
+                                // Special handling for arrays - display as comma-separated string
+                                if (Array.isArray(value)) {
+                                    if (value.length === 0) {
+                                        displayValue = '<span style="color: var(--color-text-dim);">(empty)</span>';
+                                    } else {
+                                        displayValue = value.join(', ');
+                                    }
+                                } else {
+                                    const jsonStr = JSON.stringify(value, null, 2);
+                                    const isLarge = jsonStr.length > 200;
+                                    const preview = isLarge ? JSON.stringify(value).substring(0, 100) + '...' : jsonStr;
+                                    
+                                    if (isLarge) {
+                                        const id = `json-${Math.random().toString(36).substr(2, 9)}`;
+                                        displayValue = `
+                                            <span class="metadata-json-preview" id="preview-${id}">${escapeHtml(preview)}</span>
+                                            <span class="metadata-json-toggle" onclick="toggleJson('${id}')">[expand]</span>
+                                            <pre id="full-${id}" style="display:none;margin-top:8px;">${escapeHtml(jsonStr)}</pre>
+                                        `;
+                                    } else {
+                                        displayValue = `<pre style="margin:0;">${escapeHtml(jsonStr)}</pre>`;
+                                    }
+                                }
+                            } else {
+                                displayValue = escapeHtml(String(value));
+                            }
+                            return `
+                                <div class="metadata-item">
+                                    <span class="metadata-label">${escapeHtml(key)}:</span>
+                                    <span class="metadata-value">${displayValue}</span>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                `
+                : '';
+
+            const excerptsHtml = result.analysis.relevant_excerpts && result.analysis.relevant_excerpts.length > 0
+                ? `
+                    <div class="excerpts">
+                        <div class="excerpts-title">Key Excerpts:</div>
+                        ${result.analysis.relevant_excerpts.map(excerpt => `
+                            <div class="excerpt-item">${truncate(excerpt, 150)}</div>
+                        `).join('')}
+                    </div>
+                `
+                : '';
+
+            return `
+                <div class="result-card">
+                    <div class="result-header">
+                        <span class="result-number">Result ${number}</span>
+                        <span class="result-score">Score: ${result.score.toFixed(4)}</span>
+                    </div>
+
+                    ${metadataHtml}
+
+                    <div class="result-content"></div>
+
+                    <div class="result-analysis">
+                        <div class="analysis-row">
+                            <span class="analysis-label">Relevance:</span>
+                            <span class="analysis-value">${relevanceBadge}</span>
+                        </div>
+                        <div class="analysis-row">
+                            <span class="analysis-label">Confidence:</span>
+                            <span class="analysis-value">
+                                <span class="badge badge-${confidenceClass}">${confidenceLabel}</span>
+                            </span>
+                        </div>
+                        <div class="analysis-row">
+                            <span class="analysis-label">Reason:</span>
+                            <span class="analysis-value">${result.analysis.reason}</span>
+                        </div>
+                    </div>
+
+                    ${excerptsHtml}
+                </div>
+            `;
+        }
+
+        function truncate(text, maxLength) {
+            return text.length > maxLength ? text.substring(0, maxLength) + '...' : text;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function renderMarkdown(content) {
+            // Use marked.js to render markdown
+            if (typeof marked !== 'undefined') {
+                return marked.parse(content);
+            }
+            // Fallback: escape HTML and preserve line breaks
+            return escapeHtml(content).replace(/\n/g, '<br>');
+        }
+
+        function toggleJson(id) {
+            const preview = document.getElementById(`preview-${id}`);
+            const full = document.getElementById(`full-${id}`);
+            const toggle = preview.nextElementSibling;
+            
+            if (full.style.display === 'none') {
+                preview.style.display = 'none';
+                full.style.display = 'block';
+                toggle.textContent = '[collapse]';
+            } else {
+                preview.style.display = 'inline';
+                full.style.display = 'none';
+                toggle.textContent = '[expand]';
+            }
+        }
+
+        // Check API health on load
+        async function checkHealth() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/health`);
+                if (!response.ok) {
+                    displayError('API server is not responding');
+                }
+            } catch (error) {
+                displayError('Cannot connect to API server. Please ensure the server is running.');
+            }
+        }
+
+        checkHealth();
+    </script>
+</body>
+</html>
