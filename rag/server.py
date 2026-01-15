@@ -216,10 +216,19 @@ async def query_web(request: QueryRequest):
     timing = {}
     
     try:
-        # Stage 1: Retrieval
+        # Stage 1: Retrieval (critical - must succeed)
         start_time = time.time()
-        results = components["retriever"].retrieve(request.query)
-        timing["retrieval"] = time.time() - start_time
+        try:
+            results = components["retriever"].retrieve(request.query)
+            timing["retrieval"] = time.time() - start_time
+        except Exception as e:
+            print(f"Error: Retrieval failed: {e}")
+            return QueryResponse(
+                query=request.query,
+                results=[],
+                timing={"retrieval": time.time() - start_time},
+                total_time=time.time() - start_time
+            )
         
         if not results:
             return QueryResponse(
@@ -229,28 +238,33 @@ async def query_web(request: QueryRequest):
                 total_time=timing["retrieval"]
             )
         
-        # Stage 2: Reranking
+        # Stage 2: Reranking (optional - fall back to original results)
         start_time = time.time()
-        results_reranked = components["reranker"].rerank(
-            request.query,
-            results[:TOP_K],
-            top_k=None
-        )
-        timing["reranking"] = time.time() - start_time
+        try:
+            results_reranked = components["reranker"].rerank(
+                request.query,
+                results[:TOP_K],
+                top_k=None
+            )
+            timing["reranking"] = time.time() - start_time
+        except Exception as e:
+            print(f"Warning: Reranking failed, using original results: {e}")
+            results_reranked = results[:TOP_K]
+            timing["reranking"] = time.time() - start_time
         
-        # Stage 3: LLM Selector (with error handling)
+        # Stage 3: LLM Selector (optional - fall back to reranked results)
         start_time = time.time()
         try:
             results = await components["selector"].aprocess(request.query, results_reranked)
         except Exception as e:
-            print(f"Warning: LLM Selector failed: {e}")
+            print(f"Warning: LLM Selector failed, using reranked results: {e}")
             results = results_reranked
         timing["selector"] = time.time() - start_time
         
         # Limit to requested top k
         results = results[:request.top_k]
         
-        # Stage 4: Analyze relevance for each result
+        # Stage 4: Analyze relevance for each result (optional)
         analyzed_results = []
         start_time = time.time()
         
@@ -268,14 +282,18 @@ async def query_web(request: QueryRequest):
             
             # Prepare metadata (exclude 'document' field)
             metadata = None
-            if hasattr(result, 'metadata') and result.metadata:
-                if isinstance(result.metadata, dict):
-                    metadata = {k: v for k, v in result.metadata.items() if k != 'document'}
-                else:
-                    metadata = {
-                        k: v for k, v in result.metadata.__dict__.items()
-                        if not k.startswith('_') and k != 'document'
-                    }
+            try:
+                if hasattr(result, 'metadata') and result.metadata:
+                    if isinstance(result.metadata, dict):
+                        metadata = {k: v for k, v in result.metadata.items() if k != 'document'}
+                    else:
+                        metadata = {
+                            k: v for k, v in result.metadata.__dict__.items()
+                            if not k.startswith('_') and k != 'document'
+                        }
+            except Exception as e:
+                print(f"Warning: Metadata extraction failed: {e}")
+                metadata = {}
             
             analyzed_results.append(QueryResult(
                 unit_id=result.unit_id,
@@ -296,7 +314,14 @@ async def query_web(request: QueryRequest):
         )
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
+        print(f"Error: Unexpected error in query_web: {e}")
+        # Return empty results instead of raising exception
+        return QueryResponse(
+            query=request.query,
+            results=[],
+            timing=timing if timing else {},
+            total_time=sum(timing.values()) if timing else 0
+        )
 
 
 @app.post("/query", response_model=QueryResponse)
@@ -320,10 +345,19 @@ async def query(request: QueryRequest):
     timing = {}
     
     try:
-        # Stage 1: Retrieval
+        # Stage 1: Retrieval (critical - must succeed)
         start_time = time.time()
-        results = components["retriever"].retrieve(request.query)
-        timing["retrieval"] = time.time() - start_time
+        try:
+            results = components["retriever"].retrieve(request.query)
+            timing["retrieval"] = time.time() - start_time
+        except Exception as e:
+            print(f"Error: Retrieval failed: {e}")
+            return QueryResponse(
+                query=request.query,
+                results=[],
+                timing={"retrieval": time.time() - start_time},
+                total_time=time.time() - start_time
+            )
         
         if not results:
             return QueryResponse(
@@ -333,14 +367,19 @@ async def query(request: QueryRequest):
                 total_time=timing["retrieval"]
             )
         
-        # Stage 2: Reranking only
+        # Stage 2: Reranking only (optional - fall back to original results)
         start_time = time.time()
-        results_reranked = components["reranker"].rerank(
-            request.query,
-            results[:TOP_K],
-            top_k=None
-        )
-        timing["reranking"] = time.time() - start_time
+        try:
+            results_reranked = components["reranker"].rerank(
+                request.query,
+                results[:TOP_K],
+                top_k=None
+            )
+            timing["reranking"] = time.time() - start_time
+        except Exception as e:
+            print(f"Warning: Reranking failed, using original results: {e}")
+            results_reranked = results[:TOP_K]
+            timing["reranking"] = time.time() - start_time
         
         # Limit to requested top k
         results = results_reranked[:request.top_k]
@@ -350,14 +389,18 @@ async def query(request: QueryRequest):
         for result in results:
             # Prepare metadata (exclude 'document' field)
             metadata = None
-            if hasattr(result, 'metadata') and result.metadata:
-                if isinstance(result.metadata, dict):
-                    metadata = {k: v for k, v in result.metadata.items() if k != 'document'}
-                else:
-                    metadata = {
-                        k: v for k, v in result.metadata.__dict__.items()
-                        if not k.startswith('_') and k != 'document'
-                    }
+            try:
+                if hasattr(result, 'metadata') and result.metadata:
+                    if isinstance(result.metadata, dict):
+                        metadata = {k: v for k, v in result.metadata.items() if k != 'document'}
+                    else:
+                        metadata = {
+                            k: v for k, v in result.metadata.__dict__.items()
+                            if not k.startswith('_') and k != 'document'
+                        }
+            except Exception as e:
+                print(f"Warning: Metadata extraction failed: {e}")
+                metadata = {}
             
             simple_results.append(QueryResult(
                 unit_id=result.unit_id,
@@ -377,7 +420,14 @@ async def query(request: QueryRequest):
         )
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
+        print(f"Error: Unexpected error in query: {e}")
+        # Return empty results instead of raising exception
+        return QueryResponse(
+            query=request.query,
+            results=[],
+            timing=timing if timing else {},
+            total_time=sum(timing.values()) if timing else 0
+        )
 
 
 if __name__ == "__main__":
