@@ -527,7 +527,8 @@
     </div>
 
     <script>
-        const API_BASE_URL = 'http://localhost:8000';
+        // Auto-detect API base URL based on deployment environment
+        const API_BASE_URL = window.location.origin;
         
         const queryInput = document.getElementById('queryInput');
         const searchBtn = document.getElementById('searchBtn');

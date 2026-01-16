@@ -40,8 +40,8 @@ if not COHERE_API_KEY:
         "COHERE_API_KEY is required. Please set it in .env file or environment variable."
     )
 
-# QDRANT_HOST = os.getenv("QDRANT_HOST", "13.56.109.233")
-QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
+QDRANT_HOST = os.getenv("QDRANT_HOST", "13.56.109.233")
+# QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "16333"))
 QDRANT_GRPC_PORT = int(os.getenv("QDRANT_GRPC_PORT", "16334"))
 COLLECTION_NAME = "mortgage_guidelines"
