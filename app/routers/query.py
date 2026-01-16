@@ -30,7 +30,7 @@ def get_dataset_info(dataset_id: str) -> Tuple[str, str]:
         Tuple of (collection_name, engine)
         
     Raises:
-        HTTPException: If dataset not found
+        HTTPException: If dataset not found (only when DEFAULT_COLLECTION_NAME is not configured)
     """
     conn = get_connection()
     cursor = conn.cursor()
@@ -39,6 +39,12 @@ def get_dataset_info(dataset_id: str) -> Tuple[str, str]:
     conn.close()
     
     if not row:
+        # TODO: Remove this fallback when dataset management is fully implemented in business
+        # Currently, the business doesn't have dataset management yet, so we fallback to a
+        # hardcoded collection name. This allows the API to work without proper dataset setup.
+        # When dataset management is ready, remove the fallback and raise 404 instead.
+        if config.DEFAULT_COLLECTION_NAME:
+            return config.DEFAULT_COLLECTION_NAME, config.DEFAULT_VECTOR_ENGINE
         raise HTTPException(status_code=404, detail="Dataset not found")
     
     return row["name"], row["engine"]
@@ -55,16 +61,15 @@ def clear_dataset_cache(dataset_id: str):
         _dataset_cache.pop(cache_key, None)
 
 
-@router.post("/{dataset_id}/query/vector", response_model=ApiResponse[List[UnitResult]])
-async def query_vector(dataset_id: str, request: QueryRequest):
-    """Vector search for relevant units.
+async def _perform_vector_query(dataset_id: str, request: QueryRequest) -> ApiResponse[List[UnitResult]]:
+    """Internal function to perform vector search.
     
     Args:
         dataset_id: Dataset ID
         request: Query request with query text, top_k, filters, etc.
     
     Returns:
-        List of relevant units with scores
+        API response with list of relevant units with scores
     """
     try:
         # Get dataset info from cache or database
@@ -114,6 +119,37 @@ async def query_vector(dataset_id: str, request: QueryRequest):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Vector search failed: {str(e)}")
+
+
+@router.post("/{dataset_id}/query", response_model=ApiResponse[List[UnitResult]])
+async def query(dataset_id: str, request: QueryRequest):
+    """Query for relevant units (default: vector search).
+    
+    This is the default query endpoint that uses vector search.
+    For specific search types, use /query/vector, /query/fulltext, or /query/fusion.
+    
+    Args:
+        dataset_id: Dataset ID
+        request: Query request with query text, top_k, filters, etc.
+    
+    Returns:
+        List of relevant units with scores
+    """
+    return await _perform_vector_query(dataset_id, request)
+
+
+@router.post("/{dataset_id}/query/vector", response_model=ApiResponse[List[UnitResult]])
+async def query_vector(dataset_id: str, request: QueryRequest):
+    """Vector search for relevant units.
+    
+    Args:
+        dataset_id: Dataset ID
+        request: Query request with query text, top_k, filters, etc.
+    
+    Returns:
+        List of relevant units with scores
+    """
+    return await _perform_vector_query(dataset_id, request)
 
 
 @router.post("/{dataset_id}/query/fulltext", response_model=ApiResponse[List[UnitResult]])

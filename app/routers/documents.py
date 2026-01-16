@@ -17,7 +17,7 @@ from ..constants import TaskStatus, DocumentStatus
 router = APIRouter(prefix="/datasets/{dataset_id}/documents", tags=["documents"])
 
 
-@router.post("/ingest", response_model=ApiResponse[dict])
+@router.post("", response_model=ApiResponse[dict])
 async def ingest_file(
     dataset_id: str,
     file: UploadFile = File(...),

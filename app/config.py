@@ -17,6 +17,11 @@ VECTOR_STORE_TYPE = os.getenv("VECTOR_STORE_TYPE", "qdrant")
 VECTOR_STORE_HOST = os.getenv("VECTOR_STORE_HOST", "localhost")
 VECTOR_STORE_PORT = int(os.getenv("VECTOR_STORE_PORT", "6333"))
 
+# TODO: Remove these default fallback settings when dataset management is fully implemented
+# Currently used as fallback when dataset_id is not found in database
+DEFAULT_COLLECTION_NAME = os.getenv("DEFAULT_COLLECTION_NAME", "mortgage_guidelines")
+DEFAULT_VECTOR_ENGINE = os.getenv("DEFAULT_VECTOR_ENGINE", "qdrant")
+
 # ============================================
 # Embedding Configuration
 # ============================================
