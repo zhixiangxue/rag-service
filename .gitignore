@@ -214,3 +214,4 @@ tmp/
 playground/
 design/
 uploads/
+*.db

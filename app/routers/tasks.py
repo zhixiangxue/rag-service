@@ -74,20 +74,29 @@ def get_task(task_id: str):
     return ApiResponse(success=True, code=200, data=data)
 
 
-@router.patch("/{task_id}/status", response_model=ApiResponse[TaskResponse])
-def update_task_status(task_id: str, update: TaskStatusUpdate):
-    """Update task status (for worker)."""
+@router.patch("/{task_id}", response_model=ApiResponse[TaskResponse])
+def update_task(task_id: str, update: TaskStatusUpdate):
+    """Update task (status, progress, error, etc)."""
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Check if task exists
+    # Check if task exists and get current status
     cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
     row = cursor.fetchone()
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Task not found")
     
+    current_status = row["status"]
     doc_id = row["doc_id"]
+    
+    # Validate status transition
+    if update.status is not None and not TaskStatus.is_valid_transition(current_status, update.status):
+        conn.close()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Invalid status transition: {current_status} -> {update.status}"
+        )
     
     # Build update query
     updates = []
@@ -96,10 +105,34 @@ def update_task_status(task_id: str, update: TaskStatusUpdate):
     if update.status is not None:
         updates.append("status = ?")
         params.append(update.status)
+        
+        # Auto-set progress to 100 for terminal states
+        if update.status in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+            updates.append("progress = ?")
+            params.append(100)
+        elif update.status == TaskStatus.PROCESSING and update.progress is None:
+            # Set initial progress for PROCESSING if not provided
+            updates.append("progress = ?")
+            params.append(10)
     
     if update.progress is not None:
-        updates.append("progress = ?")
-        params.append(update.progress)
+        # Only allow progress update for PROCESSING status
+        if current_status != TaskStatus.PROCESSING and update.status != TaskStatus.PROCESSING:
+            conn.close()
+            raise HTTPException(
+                status_code=400,
+                detail="Progress can only be updated for tasks in PROCESSING status"
+            )
+        
+        # Validate progress range
+        if not 0 <= update.progress <= 100:
+            conn.close()
+            raise HTTPException(status_code=400, detail="Progress must be between 0 and 100")
+        
+        # Don't add duplicate progress update if already added for terminal state
+        if update.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+            updates.append("progress = ?")
+            params.append(update.progress)
     
     if update.error_message is not None:
         updates.append("error_message = ?")
