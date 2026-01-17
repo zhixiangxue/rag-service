@@ -74,10 +74,11 @@ async def _perform_vector_query(dataset_id: str, request: QueryRequest) -> ApiRe
     try:
         # Get dataset info from cache or database
         collection_name, engine = get_dataset_info(dataset_id)
+        
         # Initialize embedder
         embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
         
-        # Initialize vector store with timeout
+        # Initialize vector store
         vector_store = QdrantVectorStore.server(
             host=config.VECTOR_STORE_HOST,
             port=config.VECTOR_STORE_PORT,

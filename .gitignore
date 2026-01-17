@@ -215,3 +215,7 @@ playground/
 design/
 uploads/
 *.db
+.env.local
+.env.dev
+.env.test
+.env.prod

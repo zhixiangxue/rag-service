@@ -1,9 +1,9 @@
 """Application configuration."""
 import os
-from dotenv import load_dotenv
+from env_loader import load_environment
 
 # Load environment variables from .env file
-load_dotenv()
+load_environment()
 
 # ============================================
 # Database Configuration

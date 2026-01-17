@@ -1,9 +1,9 @@
 """Worker configuration."""
 import os
-from dotenv import load_dotenv
+from env_loader import load_environment
 
 # Load environment variables
-load_dotenv()
+load_environment()
 
 # Import shared configurations from app
 from ..app import config as app_config
