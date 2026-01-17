@@ -1,0 +1,21 @@
+# Qdrant configuration for local server
+# Custom ports to avoid conflicts with common services
+
+service:
+  # HTTP API port (default: 6333, custom: 16333)
+  http_port: 16333
+  
+  # gRPC API port (default: 6334, custom: 16334)
+  grpc_port: 16334
+  
+  # Host to bind to
+  host: 0.0.0.0
+
+# Storage configuration
+storage:
+  # Storage will be in the directory where qdrant.exe is run
+  # (set by working directory in start_qdrant.bat)
+  storage_path: ./
+
+# Logging
+log_level: INFO
