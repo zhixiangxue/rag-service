@@ -17,7 +17,7 @@ PyPDF2>=3.0.0
 rich>=13.0.0
 
 # LLM client (for demo endpoint)
-chak-ai>=0.1.0
+chakpy @ git+https://github.com/zhixiangxue/chak-ai.git
 
 # Zag framework (install from GitHub)
 git+https://github.com/zhixiangxue/zag-ai.git#egg=zagpy[retriever,embedder]
