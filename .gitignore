@@ -217,3 +217,4 @@ uploads/
 *.db
 
 tmp/
+.workspace/

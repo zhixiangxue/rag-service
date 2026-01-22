@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional
 from .document_processor import MortgageDocumentProcessor
 from .extract_pdf_pages import split_pdf_with_overlap
 from .config import (
-    LLM_PROVIDER, LLM_MODEL, BAILIAN_API_KEY, ANTHROPIC_API_KEY,
+    LLM_PROVIDER, LLM_MODEL, LLM_API_KEY,
     EMBEDDING_URI, OPENAI_API_KEY,
     VECTOR_STORE_HOST, VECTOR_STORE_PORT,
     MEILISEARCH_HOST, MEILISEARCH_API_KEY,
@@ -117,8 +117,11 @@ async def prepare_single_file_manifest(
 async def process_document(
     file_path: Path,
     workspace_dir: Path,
+    collection_name: str,
+    meilisearch_index_name: str,
     custom_metadata: Optional[Dict[str, Any]] = None,
-    on_progress: Optional[callable] = None
+    on_progress: Optional[callable] = None,
+    vector_store_grpc_port: int = 6334
 ) -> Dict[str, Any]:
     """
     Process document (adapted from import.py).
@@ -223,9 +226,10 @@ async def process_document(
             
             # Step 2.4: Process tables (30-50% of part range)
             console.print(f"[dim]  Step 4: Processing tables...[/dim]")
+            llm_uri = f"{LLM_PROVIDER}/{LLM_MODEL}"
             await processor.process_tables(
-                llm_uri=LLM_URI,
-                api_key=BAILIAN_API_KEY,
+                llm_uri=llm_uri,
+                api_key=LLM_API_KEY,
             )
             console.print(f"  ✅ Tables processed")
             report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.5))
@@ -233,8 +237,8 @@ async def process_document(
             # Step 2.5: Extract metadata (50-70% of part range)
             console.print(f"[dim]  Step 5: Extracting metadata...[/dim]")
             await processor.extract_metadata(
-                llm_uri=LLM_URI,
-                api_key=BAILIAN_API_KEY,
+                llm_uri=llm_uri,
+                api_key=LLM_API_KEY,
                 num_keywords=NUM_KEYWORDS,
             )
             console.print(f"  ✅ Metadata extracted")
@@ -246,8 +250,8 @@ async def process_document(
                 embedding_uri=EMBEDDING_URI,
                 qdrant_host=VECTOR_STORE_HOST,
                 qdrant_port=VECTOR_STORE_PORT,
-                qdrant_grpc_port=VECTOR_STORE_GRPC_PORT,
-                collection_name=COLLECTION_NAME,
+                qdrant_grpc_port=vector_store_grpc_port,
+                collection_name=collection_name,
                 clear_existing=False,  # Accumulate, don't clear
                 api_key=OPENAI_API_KEY
             )
@@ -257,8 +261,8 @@ async def process_document(
             # Step 2.7: Build fulltext index (85-100% of part range)
             console.print(f"[dim]  Step 7: Building fulltext index...[/dim]")
             await processor.build_fulltext_index(
-                meilisearch_url=MEILISEARCH_URL,
-                index_name=MEILISEARCH_INDEX_NAME,
+                meilisearch_url=MEILISEARCH_HOST,
+                index_name=meilisearch_index_name,
                 clear_existing=False  # Accumulate, don't clear
             )
             console.print(f"  ✅ Fulltext index built")

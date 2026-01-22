@@ -26,7 +26,14 @@ MEILISEARCH_API_KEY = os.getenv("MEILISEARCH_API_KEY")
 # ============================================
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")  # openai, anthropic, bailian
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+
+# Dynamically select LLM API key based on provider
+if LLM_PROVIDER == "openai":
+    LLM_API_KEY = app_config.OPENAI_API_KEY
+elif LLM_PROVIDER == "bailian":
+    LLM_API_KEY = app_config.BAILIAN_API_KEY
+else:
+    LLM_API_KEY = None  # anthropic or other providers
 
 # ============================================
 # Reranker Configuration
@@ -61,7 +68,6 @@ VECTOR_STORE_PORT = app_config.VECTOR_STORE_PORT
 
 EMBEDDING_URI = app_config.EMBEDDING_URI
 OPENAI_API_KEY = app_config.OPENAI_API_KEY
-BAILIAN_API_KEY = app_config.BAILIAN_API_KEY
 
 # ============================================
 # HuggingFace Configuration
