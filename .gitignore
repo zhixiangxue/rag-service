@@ -220,3 +220,4 @@ uploads/
 .env.test
 .env.prod
 *.exe
+.workspace/

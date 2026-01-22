@@ -35,11 +35,12 @@ from zag.readers.docling import DoclingReader
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
 from zag.splitters import MarkdownHeaderSplitter, TextSplitter, TableSplitter, RecursiveMergingSplitter
-from zag.extractors import TableExtractor, KeywordExtractor
+from zag.extractors import TableExtractor, KeywordExtractor, TableEnricher
+from zag.parsers import TableParser
 from zag.embedders import Embedder
 from zag.storages.vector import QdrantVectorStore
 from zag.indexers import VectorIndexer, FullTextIndexer
-from zag.schemas.base import DocumentMetadata, Page, UnitType
+from zag.schemas import DocumentMetadata, Page, UnitType
 from zag.schemas.pdf import PDF
 from zag.schemas.unit import TextUnit, TableUnit
 from zag.utils.hash import calculate_file_hash
@@ -437,37 +438,71 @@ class MortgageDocumentProcessor:
         api_key: Optional[str] = None
     ) -> List[Union[TextUnit, TableUnit]]:
         """
-        Extract table summaries using LLM
-
+        Process tables with three stages:
+        
+        Stage 1 (Original): Extract embedding_content for TextUnits
+                           (replace markdown tables with natural language)
+        Stage 2 (New):     Parse data-critical TableUnits from TextUnits
+        Stage 3 (New):     Enrich TableUnits with caption and embedding_content
+        
         Args:
             llm_uri: LLM URI (e.g., "ollama/qwen2.5:7b")
             api_key: API key if needed
 
         Returns:
-            Updated units with table metadata (embedding_content)
+            Updated units list (original TextUnits + new TableUnits)
 
         Raises:
             ValueError: If units not available
 
         Note:
-            - Updates unit.embedding_content for tables
+            - Stage 1: Updates unit.embedding_content for TextUnits
+            - Stage 2: Parses new TableUnits from TextUnits
+            - Stage 3: Enriches TableUnits with caption and embedding_content
+            - Final output: merged list of TextUnits + TableUnits
         """
         if not self.units:
             raise ValueError(
                 "No units available. Call split_document() first.")
 
-        # Process tables
         console.print(f"\n📊 Processing tables with LLM: {llm_uri}")
+        
+        # ========== Stage 1: Process TextUnit embedding_content (Original) ==========
+        console.print(f"  Stage 1: Processing TextUnit embedding_content...")
         extractor = TableExtractor(llm_uri=llm_uri, api_key=api_key)
-
         await extractor.aextract(self.units)
-
-        console.print(f"  ✅ Processed {len(self.units)} units")
-
+        
         units_with_embedding = sum(1 for u in self.units if hasattr(
             u, 'embedding_content') and u.embedding_content)
+        console.print(f"  ✅ Processed {len(self.units)} TextUnits")
         console.print(
             f"  ✅ Units with embedding_content: {units_with_embedding}")
+        
+        # ========== Stage 2: Parse TableUnits from TextUnits (New) ==========
+        console.print(f"\n  Stage 2: Parsing data-critical TableUnits from TextUnits...")
+        parser = TableParser(llm_uri=llm_uri, api_key=api_key)
+        table_units = await parser.aparse(self.units, filter_critical=True)
+        console.print(f"  ✅ Parsed {len(table_units)} data-critical TableUnits")
+        
+        # ========== Stage 3: Enrich TableUnits (New) ==========
+        if table_units:
+            console.print(f"\n  Stage 3: Enriching TableUnits with LLM...")
+            enricher = TableEnricher(llm_uri=llm_uri, api_key=api_key)
+            await enricher.aextract(table_units)
+            console.print(f"  ✅ Enriched {len(table_units)} TableUnits")
+            
+            # Show sample
+            console.print("\n  Sample parsed tables (first 3):")
+            for i, table_unit in enumerate(table_units[:3], 1):
+                columns_preview = list(table_unit.df.columns)[:3]
+                console.print(f"    {i}. df shape: {table_unit.df.shape}, columns: {columns_preview}...")
+        else:
+            console.print(f"\n  ⚠️  No data-critical tables found")
+        
+        # ========== Merge units ==========
+        original_count = len(self.units)
+        self.units = self.units + table_units
+        console.print(f"\n  📦 Total units: {original_count} TextUnit + {len(table_units)} TableUnit = {len(self.units)}")
         
         # Save checkpoint
         self.save_checkpoint('tables')
