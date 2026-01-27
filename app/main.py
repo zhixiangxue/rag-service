@@ -2,7 +2,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import RedirectResponse
 import os
 import gradio as gr
 
@@ -55,11 +55,8 @@ if os.path.exists(static_dir):
 
 @app.get("/")
 async def root():
-    """Serve the demo page."""
-    static_file = os.path.join(static_dir, "index.html")
-    if os.path.exists(static_file):
-        return FileResponse(static_file)
-    return {"message": "RAG Service API", "docs": "/docs"}
+    """Redirect to Gradio UI."""
+    return RedirectResponse(url="/ui")
 
 
 if __name__ == "__main__":
