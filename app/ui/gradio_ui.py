@@ -9,6 +9,14 @@ import time
 # 从 app.config 导入配置（已加载 .env）
 from ..config import API_HOST, API_PORT
 
+# Markdown rendering support
+try:
+    import markdown
+    MARKDOWN_AVAILABLE = True
+except ImportError:
+    MARKDOWN_AVAILABLE = False
+    print("[WARNING] 'markdown' library not installed. Content will be displayed as plain text.")
+
 # UI 内部调用使用 localhost（UI 和 API 在同一进程内，用 localhost 更安全快速）
 # 如果 API_HOST 是 0.0.0.0，则改用 localhost；否则使用配置的地址
 _API_HOST_FOR_UI = "localhost" if API_HOST == "0.0.0.0" else API_HOST
@@ -384,12 +392,22 @@ def _render_query_results(data: dict, query: str) -> str:
                 html += f"<div><span style='color: #666;'>{key}:</span> {value}</div>"
             html += "</div>"
         
-        # Content
-        content = result.get("content", "").replace("\n", "<br>")
+        # Content - 使用 Markdown 渲染
+        raw_content = result.get("content", "")
+        if MARKDOWN_AVAILABLE:
+            # 使用 Markdown 渲染，启用表格和代码高亮扩展
+            formatted_content = markdown.markdown(
+                raw_content,
+                extensions=['tables', 'fenced_code', 'nl2br']
+            )
+        else:
+            # 回退到简单的换行处理
+            formatted_content = raw_content.replace("\n", "<br>")
+        
         html += f"""
             <div style='background: #f9f9f9; padding: 16px; border-left: 3px solid #3b82f6; border-radius: 4px; margin-bottom: 16px;'>
                 <div style='font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 8px;'>📄 Retrieved Content</div>
-                <div>{content}</div>
+                <div style='overflow-x: auto;'>{formatted_content}</div>
             </div>
         """
         
