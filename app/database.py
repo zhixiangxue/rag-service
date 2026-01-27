@@ -42,6 +42,7 @@ def init_db():
             workspace_dir TEXT NOT NULL,
             file_size INTEGER NOT NULL,
             file_type TEXT NOT NULL,
+            file_hash TEXT,
             status TEXT NOT NULL,
             task_id INTEGER,
             unit_count INTEGER DEFAULT 0,
@@ -49,6 +50,12 @@ def init_db():
             updated_at TEXT NOT NULL,
             FOREIGN KEY (dataset_id) REFERENCES datasets(id)
         )
+    """)
+    
+    # Create index for duplicate detection
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_documents_dataset_hash 
+        ON documents(dataset_id, file_hash)
     """)
     
     # Task table

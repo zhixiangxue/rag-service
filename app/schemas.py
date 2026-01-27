@@ -59,6 +59,7 @@ class DocumentResponse(BaseModel):
     workspace_dir: str
     file_size: int
     file_type: str
+    file_hash: Optional[str] = None
     status: str  # PROCESSING, COMPLETED, FAILED, DISABLED
     task_id: Optional[str] = None
     unit_count: Optional[int] = None

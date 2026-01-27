@@ -15,6 +15,48 @@ from ..constants import TaskStatus, DocumentStatus
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
+@router.get("", response_model=ApiResponse[List[TaskResponse]])
+def get_all_tasks(limit: int = 10, status: Optional[str] = None):
+    """Get all tasks (optionally filtered by status).
+    
+    Args:
+        limit: Maximum number of tasks to return (default: 10)
+        status: Filter by task status (PENDING, PROCESSING, COMPLETED, FAILED)
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    if status:
+        cursor.execute(
+            "SELECT * FROM tasks WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+            (status, limit)
+        )
+    else:
+        cursor.execute(
+            "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?",
+            (limit,)
+        )
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    results = []
+    for row in rows:
+        error_message = json.loads(row["error_message"]) if row["error_message"] else None
+        results.append(TaskResponse(
+            task_id=str(row["id"]),
+            dataset_id=str(row["dataset_id"]),
+            doc_id=str(row["doc_id"]),
+            status=row["status"],
+            progress=row["progress"],
+            error_message=error_message,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"]
+        ))
+    
+    return ApiResponse(success=True, code=200, data=results)
+
+
 @router.get("/pending", response_model=ApiResponse[List[TaskResponse]])
 def get_pending_tasks(limit: int = 10):
     """Get pending tasks for worker to process."""

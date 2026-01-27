@@ -141,22 +141,27 @@ async def process_document(
     
     start_time = time.time()
     
-    # Helper function to report progress
-    def report_progress(progress: int):
+    # Helper function to report progress (支持 async 回调)
+    async def report_progress(progress: int):
         if on_progress:
             try:
-                on_progress(progress)
+                # 检查是否是 async 函数
+                import inspect
+                if inspect.iscoroutinefunction(on_progress):
+                    await on_progress(progress)
+                else:
+                    on_progress(progress)
             except Exception as e:
                 console.print(f"[yellow]⚠ Progress callback error: {e}[/yellow]")
     
     # Step 1: Prepare manifest (10-15%)
-    report_progress(10)
+    await report_progress(10)
     manifest = await prepare_single_file_manifest(
         file_path=file_path,
         workspace_dir=workspace_dir,
         custom_metadata=custom_metadata
     )
-    report_progress(15)
+    await report_progress(15)
     
     task = manifest["tasks"][0]
     source_hash = task["source_hash"]
@@ -194,7 +199,7 @@ async def process_document(
             processor = MortgageDocumentProcessor(output_root=output_dir)
             
             # Step 2.1: Read document (0-10% of part range)
-            report_progress(part_progress_start)
+            await report_progress(part_progress_start)
             console.print(f"[dim]  Step 1: Reading document...[/dim]")
             await processor.read_document(
                 pdf_path=part_file,
@@ -203,14 +208,14 @@ async def process_document(
                 source_hash=source_hash
             )
             console.print(f"  ✅ Document loaded: {len(processor.document.content):,} characters")
-            report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.1))
+            await report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.1))
             
             # Step 2.2: Inject custom metadata (10-15% of part range)
             if metadata:
                 console.print(f"[dim]  Step 2: Injecting metadata...[/dim]")
                 processor.set_business_context(custom_metadata=metadata)
                 console.print(f"  ✅ Metadata injected")
-            report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.15))
+            await report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.15))
             
             # Step 2.3: Split document (15-30% of part range)
             console.print(f"[dim]  Step 3: Splitting document...[/dim]")
@@ -222,7 +227,7 @@ async def process_document(
             )
             part_units = len(processor.units)
             console.print(f"  ✅ Split into {part_units} units")
-            report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.3))
+            await report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.3))
             
             # Step 2.4: Process tables (30-50% of part range)
             console.print(f"[dim]  Step 4: Processing tables...[/dim]")
@@ -232,7 +237,7 @@ async def process_document(
                 api_key=LLM_API_KEY,
             )
             console.print(f"  ✅ Tables processed")
-            report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.5))
+            await report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.5))
             
             # Step 2.5: Extract metadata (50-70% of part range)
             console.print(f"[dim]  Step 5: Extracting metadata...[/dim]")
@@ -242,7 +247,7 @@ async def process_document(
                 num_keywords=NUM_KEYWORDS,
             )
             console.print(f"  ✅ Metadata extracted")
-            report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.7))
+            await report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.7))
             
             # Step 2.6: Build vector index (70-85% of part range)
             console.print(f"[dim]  Step 6: Building vector index...[/dim]")
@@ -256,7 +261,7 @@ async def process_document(
                 api_key=OPENAI_API_KEY
             )
             console.print(f"  ✅ Vector index built")
-            report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.85))
+            await report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.85))
             
             # Step 2.7: Build fulltext index (85-100% of part range)
             console.print(f"[dim]  Step 7: Building fulltext index...[/dim]")
@@ -266,7 +271,7 @@ async def process_document(
                 clear_existing=False  # Accumulate, don't clear
             )
             console.print(f"  ✅ Fulltext index built")
-            report_progress(part_progress_end)
+            await report_progress(part_progress_end)
             
             total_units += part_units
             success_count += 1
@@ -281,7 +286,7 @@ async def process_document(
     elapsed = time.time() - start_time
     
     # Report near completion
-    report_progress(95)
+    await report_progress(95)
     
     # Summary
     console.print(f"\n[bold green]📊 Processing Summary[/bold green]")
@@ -295,7 +300,7 @@ async def process_document(
         raise Exception(f"Processing failed: {error_count}/{len(parts)} parts failed")
     
     # Report completion - will be set to 100 by caller
-    report_progress(98)
+    await report_progress(98)
     
     return {
         "unit_count": total_units,

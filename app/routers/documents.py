@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from typing import List, Optional
 import os
 import json
+import xxhash
 
 from ..database import get_connection, now
 from ..schemas import (
@@ -33,9 +34,28 @@ async def ingest_file(
         conn.close()
         raise HTTPException(status_code=404, detail="Dataset not found")
     
+    # Read file content
+    file_content = await file.read()
+    
+    # Calculate file hash using xxhash
+    file_hash = xxhash.xxh64(file_content).hexdigest()
+    
+    # Check for duplicate: same dataset + same file_hash
+    cursor.execute(
+        "SELECT id, file_name FROM documents WHERE dataset_id = ? AND file_hash = ?",
+        (dataset_id, file_hash)
+    )
+    existing_doc = cursor.fetchone()
+    
+    if existing_doc:
+        conn.close()
+        raise HTTPException(
+            status_code=409,
+            detail=f"File with same content already exists in this dataset (doc_id: {existing_doc['id']}, file: {existing_doc['file_name']})"
+        )
+    
     # Save file using storage abstraction
     storage = get_storage()
-    file_content = await file.read()
     
     # Reset file pointer for storage.save
     await file.seek(0)
@@ -52,13 +72,13 @@ async def ingest_file(
     
     timestamp = now()
     
-    # Create Document record
+    # Create Document record with file_hash
     cursor.execute(
         """
-        INSERT INTO documents (dataset_id, file_name, file_path, workspace_dir, file_size, file_type, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO documents (dataset_id, file_name, file_path, workspace_dir, file_size, file_type, file_hash, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (dataset_id, file.filename, file_path, workspace_dir, file_size, file_type, DocumentStatus.PROCESSING, timestamp, timestamp)
+        (dataset_id, file.filename, file_path, workspace_dir, file_size, file_type, file_hash, DocumentStatus.PROCESSING, timestamp, timestamp)
     )
     conn.commit()
     doc_id = cursor.lastrowid
@@ -93,7 +113,8 @@ async def ingest_file(
             "task_id": str(task_id),
             "doc_id": str(doc_id),
             "file_name": file.filename,
-            "file_path": file_path
+            "file_path": file_path,
+            "file_hash": file_hash
         }
     )
 
@@ -135,6 +156,7 @@ def list_documents(dataset_id: str, status: Optional[str] = None):
             workspace_dir=row["workspace_dir"],
             file_size=row["file_size"],
             file_type=row["file_type"],
+            file_hash=row["file_hash"] if "file_hash" in row.keys() else None,
             status=row["status"],
             task_id=str(row["task_id"]) if row["task_id"] else None,
             unit_count=row["unit_count"],
@@ -169,6 +191,7 @@ def get_document(dataset_id: str, doc_id: str):
         workspace_dir=row["workspace_dir"],
         file_size=row["file_size"],
         file_type=row["file_type"],
+        file_hash=row["file_hash"] if "file_hash" in row.keys() else None,
         status=row["status"],
         task_id=str(row["task_id"]) if row["task_id"] else None,
         unit_count=row["unit_count"],

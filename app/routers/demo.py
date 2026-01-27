@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from ..schemas import ApiResponse
 from .. import config
+from ..database import get_connection
 from zag.embedders import Embedder
 from zag.storages.vector import QdrantVectorStore
 from zag.retrievers.basic import VectorRetriever
@@ -23,29 +24,24 @@ RERANKER_MODEL = "cohere/rerank-english-v3.0"
 LLM_SELECTOR_URI = "openai/gpt-4o-mini"
 LLM_URI = "openai/gpt-4o"
 
-# Global components cache (lazy initialized)
-_demo_components = {}
 
-
-def _get_retriever():
-    """Get or create retriever (cached)."""
-    if "retriever" not in _demo_components:
-        # TODO: Use dataset_id instead of hardcoded collection
-        embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
-        vector_store = QdrantVectorStore.server(
-            host=config.VECTOR_STORE_HOST,
-            port=config.VECTOR_STORE_PORT,
-            prefer_grpc=False,
-            collection_name="mortgage_guidelines",  # TODO: Remove hardcode
-            embedder=embedder,
-            timeout=180  # 3 minutes for slow LLM pipeline
-        )
-        _demo_components["retriever"] = VectorRetriever(vector_store=vector_store, top_k=TOP_K)
-    return _demo_components["retriever"]
+def _create_retriever(collection_name: str):
+    """Create retriever for given collection (no caching)."""
+    embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
+    vector_store = QdrantVectorStore.server(
+        host=config.VECTOR_STORE_HOST,
+        port=config.VECTOR_STORE_PORT,
+        prefer_grpc=False,
+        collection_name=collection_name,
+        embedder=embedder,
+        timeout=180  # 3 minutes for slow LLM pipeline
+    )
+    return VectorRetriever(vector_store=vector_store, top_k=TOP_K)
 
 
 class WebQueryRequest(BaseModel):
     """Web query request model."""
+    dataset_id: str = Field(..., description="Dataset ID to query")
     query: str = Field(..., description="User's question")
     top_k: Optional[int] = Field(FINAL_TOP_K, description="Number of results to return")
 
@@ -123,12 +119,28 @@ async def query_web(request: WebQueryRequest):
     
     WARNING: This is slow (~20s) due to multiple LLM calls.
     For production use, call /datasets/{dataset_id}/query/vector instead.
-    
-    TODO: This endpoint uses hardcoded collection name 'mortgage_guidelines'.
-    Will be refactored to use dataset_id when demo is replaced with proper UI.
     """
+    print(f"[DEBUG] /query/web called - Dataset ID: {request.dataset_id}, Query: {request.query[:50]}...")
+    
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
+    
+    # Get dataset's collection name
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM datasets WHERE id = ?", (request.dataset_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Dataset {request.dataset_id} not found")
+        
+        collection_name = row["name"]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get dataset: {str(e)}")
     
     timing = {}
     
@@ -136,7 +148,7 @@ async def query_web(request: WebQueryRequest):
         # Stage 1: Retrieval
         start_time = time.time()
         try:
-            retriever = _get_retriever()
+            retriever = _create_retriever(collection_name)
             results = retriever.retrieve(request.query)
             timing["retrieval"] = time.time() - start_time
         except Exception as e:
@@ -157,9 +169,7 @@ async def query_web(request: WebQueryRequest):
         # Stage 2: Reranking
         start_time = time.time()
         try:
-            # TODO: Get API key from config
-            cohere_key = config.OPENAI_API_KEY  # TODO: Should be COHERE_API_KEY
-            reranker = Reranker(RERANKER_MODEL, api_key=cohere_key)
+            reranker = Reranker(RERANKER_MODEL, api_key=config.COHERE_API_KEY)
             results_reranked = reranker.rerank(
                 request.query,
                 results[:TOP_K],

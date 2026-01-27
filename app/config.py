@@ -1,6 +1,6 @@
 """Application configuration."""
 import os
-from env_loader import load_environment
+from ..env_loader import load_environment
 
 # Load environment variables from .env file
 load_environment()
@@ -28,6 +28,7 @@ DEFAULT_VECTOR_ENGINE = os.getenv("DEFAULT_VECTOR_ENGINE", "qdrant")
 EMBEDDING_URI = os.getenv("EMBEDDING_URI", "openai/text-embedding-3-small")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 BAILIAN_API_KEY = os.getenv("BAILIAN_API_KEY")
+COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 
 # ============================================
 # File Storage Configuration

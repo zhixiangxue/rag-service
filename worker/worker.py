@@ -12,6 +12,7 @@ from typing import Optional, Dict, Any
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
 
 from ..app.constants import TaskStatus
 from . import config
@@ -58,7 +59,7 @@ class RagWorker:
         
         async with httpx.AsyncClient() as client:
             response = await client.patch(
-                f"{self.api_base_url}/tasks/{task_id}/status",
+                f"{self.api_base_url}/tasks/{task_id}",  # 修改：去掉 /status
                 json=payload
             )
             response.raise_for_status()
@@ -78,9 +79,8 @@ class RagWorker:
         dataset_id = task["dataset_id"]
         doc_id = task["doc_id"]
         
-        console.print(f"\n[bold cyan]Processing Task {task_id}[/bold cyan]")
-        console.print(f"  Dataset: {dataset_id}")
-        console.print(f"  Document: {doc_id}")
+        console.print("\n" + "=" * 80)
+        console.print(f"[bold cyan]Processing Task {task_id}[/bold cyan]")
         
         try:
             # Update to PROCESSING
@@ -91,19 +91,52 @@ class RagWorker:
             file_path = Path(doc_info["file_path"])
             workspace_dir = Path(doc_info["workspace_dir"])
             
-            console.print(f"  File: {file_path}")
-            console.print(f"  Workspace: {workspace_dir}")
-            
             if not file_path.exists():
                 raise FileNotFoundError(f"File not found: {file_path}")
+            
+            # Get dataset info to retrieve collection_name
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.api_base_url}/datasets/{dataset_id}"
+                )
+                response.raise_for_status()
+                dataset_info = response.json()["data"]
+            
+            collection_name = dataset_info["collection_name"]
+            
+            # 使用 Table 显示映射关系
+            mapping_table = Table(show_header=False, box=None, padding=(0, 2))
+            mapping_table.add_column("Item", style="cyan")
+            mapping_table.add_column("Arrow", style="white")
+            mapping_table.add_column("Target", style="green bold")
+            
+            mapping_table.add_row("File", "-->", file_path.name)
+            mapping_table.add_row("Collection", "-->", collection_name)
+            mapping_table.add_row("Vector Store", "-->", f"Qdrant @ {config.VECTOR_STORE_HOST}:{config.VECTOR_STORE_PORT}")
+            
+            console.print("\n")
+            console.print(Panel(mapping_table, title="[bold]Data Mapping[/bold]", border_style="magenta"))
+            console.print("")
             
             # Process document using integrated pipeline
             console.print("\n[bold]Starting document processing pipeline...[/bold]")
             
+            # 定义进度回调函数（async 版本，串行等待）
+            async def update_progress(progress: int):
+                """更新任务进度到 API（async 版本，串行执行）."""
+                try:
+                    await self.update_task_status(task_id, TaskStatus.PROCESSING, progress=progress)
+                except Exception as e:
+                    console.print(f"[yellow]Progress update failed: {e}[/yellow]")
+            
             result = await process_document(
                 file_path=file_path,
                 workspace_dir=workspace_dir,
-                custom_metadata=None  # TODO: Load from doc_info if available
+                collection_name=collection_name,  # Use dataset's collection_name
+                meilisearch_index_name=collection_name,  # Use same name for index
+                custom_metadata=None,  # TODO: Load from doc_info if available
+                on_progress=update_progress,  # 传递 async 回调
+                vector_store_grpc_port=config.VECTOR_STORE_GRPC_PORT
             )
             
             # Complete task with actual unit count

@@ -25,7 +25,7 @@ def _get_cache_invalidator():
 
 @router.post("", response_model=ApiResponse[DatasetResponse])
 def create_dataset(dataset: DatasetCreate):
-    """Create a new dataset."""
+    """Create a new dataset or return existing one if name already exists."""
     # TODO: Call zag to create vector store collection
     # Should use zag's abstraction layer instead of directly calling Qdrant
     # This allows zag to handle different vector database engines
@@ -33,6 +33,27 @@ def create_dataset(dataset: DatasetCreate):
     conn = get_connection()
     cursor = conn.cursor()
     
+    # Check if dataset with same name already exists
+    cursor.execute("SELECT * FROM datasets WHERE name = ?", (dataset.name,))
+    existing_row = cursor.fetchone()
+    
+    if existing_row:
+        # Return existing dataset
+        conn.close()
+        config = json.loads(existing_row["config"]) if existing_row["config"] else None
+        data = DatasetResponse(
+            dataset_id=str(existing_row["id"]),
+            collection_name=existing_row["name"],
+            name=existing_row["name"],
+            description=existing_row["description"],
+            engine=existing_row["engine"],
+            config=config,
+            created_at=existing_row["created_at"],
+            updated_at=existing_row["updated_at"]
+        )
+        return ApiResponse(success=True, code=200, message="Dataset already exists", data=data)
+    
+    # Create new dataset
     timestamp = now()
     config_json = json.dumps(dataset.config) if dataset.config else None
     

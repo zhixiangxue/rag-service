@@ -35,7 +35,7 @@ from zag.readers.docling import DoclingReader
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
 from zag.splitters import MarkdownHeaderSplitter, TextSplitter, TableSplitter, RecursiveMergingSplitter
-from zag.extractors import TableExtractor, KeywordExtractor, TableEnricher
+from zag.extractors import KeywordExtractor, TableEnricher, TableSummarizer
 from zag.parsers import TableParser
 from zag.embedders import Embedder
 from zag.storages.vector import QdrantVectorStore
@@ -467,10 +467,15 @@ class MortgageDocumentProcessor:
 
         console.print(f"\n📊 Processing tables with LLM: {llm_uri}")
         
-        # ========== Stage 1: Process TextUnit embedding_content (Original) ==========
+        # ========== Stage 1: Process TextUnit embedding_content ==========
         console.print(f"  Stage 1: Processing TextUnit embedding_content...")
-        extractor = TableExtractor(llm_uri=llm_uri, api_key=api_key)
-        await extractor.aextract(self.units)
+        summarizer = TableSummarizer(llm_uri=llm_uri, api_key=api_key)
+        results = await summarizer.aextract(self.units)
+        
+        # Apply results to units
+        for unit, metadata in zip(self.units, results):
+            if metadata.get("embedding_content"):
+                unit.embedding_content = metadata["embedding_content"]
         
         units_with_embedding = sum(1 for u in self.units if hasattr(
             u, 'embedding_content') and u.embedding_content)
@@ -478,26 +483,63 @@ class MortgageDocumentProcessor:
         console.print(
             f"  ✅ Units with embedding_content: {units_with_embedding}")
         
-        # ========== Stage 2: Parse TableUnits from TextUnits (New) ==========
-        console.print(f"\n  Stage 2: Parsing data-critical TableUnits from TextUnits...")
-        parser = TableParser(llm_uri=llm_uri, api_key=api_key)
-        table_units = await parser.aparse(self.units, filter_critical=True)
-        console.print(f"  ✅ Parsed {len(table_units)} data-critical TableUnits")
+        # ========== Stage 2: Parse TableUnits from PDF (re-read with MinerU) ==========
+        console.print(f"\n  Stage 2: Parsing tables with MinerU (high-quality table extraction)...")
         
-        # ========== Stage 3: Enrich TableUnits (New) ==========
+        # Re-read PDF with MinerU for better table quality
+        from zag.readers import MinerUReader
+        from zag.parsers import TableParser
+        from zag.schemas import UnitMetadata
+        
+        console.print(f"  ⏳ Re-reading PDF with MinerUReader...")
+        mineru_reader = MinerUReader()  # Use default hybrid-auto-engine backend
+        pdf_mineru = mineru_reader.read(self.pdf_path)  # Temporary object for table parsing
+        console.print(f"  ✅ Re-read complete (MinerU provides better table structure)")
+        
+        # Parse tables from MinerU's markdown output
+        parser = TableParser()  # No LLM needed - pure HTML/Markdown parsing
+        unit_metadata = UnitMetadata(
+            document=pdf_mineru.metadata.model_dump_deep()  # Deep copy for safety
+        )
+        table_units = parser.parse(
+            text=pdf_mineru.content,  # MinerU's high-quality markdown
+            metadata=unit_metadata,
+            doc_id=pdf_mineru.doc_id,
+        )
+        console.print(f"  ✅ Parsed {len(table_units)} tables from MinerU output")
+        
+        # ========== Stage 3: Enrich TableUnits (LLM-based) ==========
         if table_units:
             console.print(f"\n  Stage 3: Enriching TableUnits with LLM...")
+            from zag.extractors import TableEnrichMode
+            
             enricher = TableEnricher(llm_uri=llm_uri, api_key=api_key)
-            await enricher.aextract(table_units)
-            console.print(f"  ✅ Enriched {len(table_units)} TableUnits")
+            enriched_tables = await enricher.aextract(
+                table_units,
+                mode=TableEnrichMode.CRITICAL_ONLY  # Judge all, enrich only critical tables
+            )
+            console.print(f"  ✅ Enriched {len(enriched_tables)} TableUnits")
+            
+            # Count critical tables
+            critical_count = sum(
+                1 for u in enriched_tables 
+                if u.metadata.custom.get("table", {}).get("is_data_critical", False)
+            )
+            console.print(f"  📊 {critical_count}/{len(enriched_tables)} tables are data-critical")
             
             # Show sample
-            console.print("\n  Sample parsed tables (first 3):")
-            for i, table_unit in enumerate(table_units[:3], 1):
-                columns_preview = list(table_unit.df.columns)[:3]
-                console.print(f"    {i}. df shape: {table_unit.df.shape}, columns: {columns_preview}...")
+            console.print("\n  Sample enriched tables (first 3):")
+            for i, table_unit in enumerate(enriched_tables[:3], 1):
+                meta_table = (table_unit.metadata.custom or {}).get("table", {})
+                is_critical = meta_table.get("is_data_critical", False)
+                console.print(f"    {i}. shape: {table_unit.df.shape}, critical: {is_critical}")
+                if is_critical and table_unit.caption:
+                    console.print(f"       caption: {table_unit.caption[:60]}...")
+            
+            # Use enriched tables
+            table_units = enriched_tables
         else:
-            console.print(f"\n  ⚠️  No data-critical tables found")
+            console.print(f"\n  ⚠️  No tables found in document")
         
         # ========== Merge units ==========
         original_count = len(self.units)

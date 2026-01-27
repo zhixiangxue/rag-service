@@ -23,7 +23,7 @@ class TaskStatus(str, Enum):
         # Define valid transitions
         valid_transitions = {
             TaskStatus.PENDING: [TaskStatus.PROCESSING],
-            TaskStatus.PROCESSING: [TaskStatus.COMPLETED, TaskStatus.FAILED],
+            TaskStatus.PROCESSING: [TaskStatus.PROCESSING, TaskStatus.COMPLETED, TaskStatus.FAILED],  # Allow PROCESSING→PROCESSING for progress updates
             TaskStatus.COMPLETED: [],  # Terminal state
             TaskStatus.FAILED: []  # Terminal state
         }

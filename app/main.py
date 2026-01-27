@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
+import gradio as gr
 
 from .database import init_db
 from .routers import datasets, documents, tasks, query, units, health, demo
@@ -28,13 +29,23 @@ app.add_middleware(
 )
 
 # Register routers
-app.include_router(health.router)  # Health check (no prefix)
+app.include_router(health.router)
 app.include_router(datasets.router)
 app.include_router(documents.router)
 app.include_router(tasks.router)
 app.include_router(query.router)
 app.include_router(units.router)
-app.include_router(demo.router)  # TODO: Temporary demo endpoint, may be removed
+app.include_router(demo.router)
+
+# Mount Gradio UI
+try:
+    from .ui.gradio_ui import gradio_app
+    app = gr.mount_gradio_app(app, gradio_app, path="/ui")
+    print("✅ Gradio UI mounted at /ui")
+except ImportError as e:
+    print(f"⚠️  Gradio UI not available: {e}")
+except Exception as e:
+    print(f"⚠️  Failed to mount Gradio UI: {e}")
 
 # Mount static files
 static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
@@ -53,11 +64,15 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
+    from .config import API_HOST, API_PORT
+    
     # Note: For /query/web demo endpoint, use --timeout-keep-alive 180 to allow slow LLM pipeline
+    # IMPORTANT: Must use full module path "rag-service.app.main:app" when running from zag-ai/ directory
     uvicorn.run(
-        "app.main:app",  # Use string for reload to work
-        host="0.0.0.0", 
-        port=8000,
+        "rag-service.app.main:app",  # Full path (run from zag-ai/ for relative imports)
+        host=API_HOST, 
+        port=API_PORT,
         reload=True,  # Enable auto-reload for development
-        timeout_keep_alive=180  # 3 minutes for slow /query/web endpoint
+        timeout_keep_alive=180,  # 3 minutes for slow /query/web endpoint
+        timeout_graceful_shutdown=5  # Only wait 5 seconds for graceful shutdown
     )

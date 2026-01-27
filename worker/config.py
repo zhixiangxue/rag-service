@@ -1,6 +1,6 @@
 """Worker configuration."""
 import os
-from env_loader import load_environment
+from ..env_loader import load_environment
 
 # Load environment variables
 load_environment()
@@ -11,7 +11,9 @@ from ..app import config as app_config
 # ============================================
 # Worker Specific Configuration
 # ============================================
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+_worker_api_host = "localhost" if app_config.API_HOST == "0.0.0.0" else app_config.API_HOST
+API_BASE_URL = f"http://{_worker_api_host}:{app_config.API_PORT}"
+
 WORKER_POLL_INTERVAL = int(os.getenv("WORKER_POLL_INTERVAL", "5"))  # seconds
 WORKER_MAX_RETRIES = int(os.getenv("WORKER_MAX_RETRIES", "3"))
 
@@ -65,6 +67,7 @@ NUM_KEYWORDS = int(os.getenv("NUM_KEYWORDS", "5"))
 VECTOR_STORE_TYPE = app_config.VECTOR_STORE_TYPE
 VECTOR_STORE_HOST = app_config.VECTOR_STORE_HOST
 VECTOR_STORE_PORT = app_config.VECTOR_STORE_PORT
+VECTOR_STORE_GRPC_PORT = int(os.getenv("VECTOR_STORE_GRPC_PORT", "6334"))
 
 EMBEDDING_URI = app_config.EMBEDDING_URI
 OPENAI_API_KEY = app_config.OPENAI_API_KEY

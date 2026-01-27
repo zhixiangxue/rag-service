@@ -75,10 +75,15 @@ def normalize_path(path_str: str) -> Path:
     - Single quotes: '/path/to/file.pdf'
     - Double quotes: "/path/to/file.pdf"
     - Escaped spaces: /path/to/my\\ file.pdf
+    - PowerShell prefix: & 'path/to/file.pdf'
     - Plain paths: /path/to/file.pdf
     """
     # Remove leading/trailing whitespace
     path_str = path_str.strip()
+    
+    # Remove PowerShell command prefix (& at the beginning)
+    if path_str.startswith('& '):
+        path_str = path_str[2:].strip()
     
     # Remove surrounding quotes (single or double)
     if (path_str.startswith("'") and path_str.endswith("'")) or \

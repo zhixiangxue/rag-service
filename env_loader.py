@@ -24,14 +24,19 @@ def load_environment():
     If ENV environment variable is set, it will try to load .env.{ENV} first.
     Otherwise, it will search for the first available file from the list above.
     
+    Note: Searches for .env files in the rag-service/ directory (not cwd).
+    
     Raises:
         FileNotFoundError: If no .env file is found.
     """
+    # Get the directory where this script is located (rag-service/)
+    script_dir = Path(__file__).parent
+    
     # If ENV is explicitly set, try to use it first
     env = os.getenv('ENV')
     if env:
-        env_file = f'.env.{env}'
-        if Path(env_file).exists():
+        env_file = script_dir / f'.env.{env}'
+        if env_file.exists():
             load_dotenv(env_file)
             print(f"Loaded environment from: {env_file}")
             return
@@ -46,14 +51,15 @@ def load_environment():
         '.env.prod',
     ]
     
-    for env_file in env_files:
-        if Path(env_file).exists():
+    for env_file_name in env_files:
+        env_file = script_dir / env_file_name
+        if env_file.exists():
             load_dotenv(env_file)
             print(f"Loaded environment from: {env_file}")
             return
     
     # No env file found
     raise FileNotFoundError(
-        "No .env file found. Please create one of: "
+        f"No .env file found in {script_dir}. Please create one of: "
         f"{', '.join(env_files)}"
     )
