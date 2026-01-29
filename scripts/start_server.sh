@@ -81,7 +81,9 @@ from pathlib import Path
 
 try:
     # Import actual config used by the server
-    from rag-service.app.config import DATABASE_PATH
+    import importlib
+    rag_service = importlib.import_module('rag-service.app.config')
+    DATABASE_PATH = rag_service.DATABASE_PATH
     
     abs_db_path = Path(DATABASE_PATH).resolve()
     
