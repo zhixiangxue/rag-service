@@ -70,7 +70,7 @@ echo "[3/4] Changed to project root: $PROJECT_ROOT"
 echo "[4/4] Starting server (python -m rag-service.app.main)..."
 echo ""
 
-# Debug: Show database configuration
+# Debug: Show database configuration (use actual config.py)
 echo "========================================"
 echo "  Database Configuration"
 echo "========================================"
@@ -78,26 +78,21 @@ python -c "
 import sys
 sys.path.insert(0, '$PROJECT_ROOT')
 from pathlib import Path
+
 try:
-    from dotenv import load_dotenv
-    import os
+    # Import actual config used by the server
+    from rag-service.app.config import DATABASE_PATH
     
-    # Load .env.local
-    env_file = Path('$PROJECT_ROOT/rag-service/.env.local')
-    if env_file.exists():
-        load_dotenv(env_file)
-        print(f'Loaded .env from: {env_file}')
+    abs_db_path = Path(DATABASE_PATH).resolve()
     
-    # Get DATABASE_PATH
-    db_path = os.getenv('DATABASE_PATH', './data/rag.db')
-    abs_db_path = Path(db_path).absolute()
-    
-    print(f'DATABASE_PATH (env):  {db_path}')
-    print(f'DATABASE_PATH (abs):  {abs_db_path}')
-    print(f'Parent dir exists:    {abs_db_path.parent.exists()}')
-    print(f'DB file exists:       {abs_db_path.exists()}')
+    print(f'DATABASE_PATH (config): {DATABASE_PATH}')
+    print(f'DATABASE_PATH (abs):    {abs_db_path}')
+    print(f'Parent dir exists:      {abs_db_path.parent.exists()}')
+    print(f'DB file exists:         {abs_db_path.exists()}')
 except Exception as e:
-    print(f'Error: {e}')
+    import traceback
+    print(f'Error loading config: {e}')
+    traceback.print_exc()
 "
 echo "========================================"
 echo ""
