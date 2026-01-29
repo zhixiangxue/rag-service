@@ -135,6 +135,16 @@ async def process_document(
     Returns:
         Processing result with unit_count and other stats
     """
+    # DEBUG: Print function call info
+    console.print(f"\n[yellow]DEBUG: process_document called with:[/yellow]")
+    console.print(f"  file_path: {file_path} (type: {type(file_path).__name__})")
+    console.print(f"  workspace_dir: {workspace_dir} (type: {type(workspace_dir).__name__})")
+    console.print(f"  collection_name: {collection_name} (type: {type(collection_name).__name__})")
+    console.print(f"  meilisearch_index_name: {meilisearch_index_name} (type: {type(meilisearch_index_name).__name__})")
+    console.print(f"  custom_metadata: {custom_metadata}")
+    console.print(f"  on_progress: {on_progress}")
+    console.print(f"  vector_store_grpc_port: {vector_store_grpc_port}")
+    
     console.print(f"\n[bold cyan]🚀 Processing Document[/bold cyan]")
     console.print(f"   File: {file_path}")
     console.print(f"   Workspace: {workspace_dir}\n")
