@@ -3,12 +3,17 @@ import sqlite3
 from typing import Optional
 from datetime import datetime
 import uuid
+from pathlib import Path
 
 from .config import DATABASE_PATH
 
 
 def get_connection():
     """Get database connection."""
+    # Auto-create parent directory if it doesn't exist
+    db_path = Path(DATABASE_PATH)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row  # Enable dict-like access
     return conn
