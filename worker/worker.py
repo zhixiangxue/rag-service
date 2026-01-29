@@ -20,14 +20,6 @@ from .processor import process_document
 
 console = Console()
 
-# DEBUG: Print imported function signature at module load time
-import inspect
-console.print("[yellow]=" * 60)
-console.print("[yellow]DEBUG: Checking process_document at import time")
-console.print(f"[yellow]Function location: {inspect.getfile(process_document)}")
-console.print(f"[yellow]Function signature: {inspect.signature(process_document)}")
-console.print("[yellow]=" * 60)
-
 
 class RagWorker:
     """RAG document processing worker."""
@@ -36,6 +28,14 @@ class RagWorker:
         self.api_base_url = config.API_BASE_URL
         self.poll_interval = config.WORKER_POLL_INTERVAL
         self.running = False
+        
+        # DEBUG: Print imported function signature
+        import inspect
+        console.print("\n" + "=" * 60)
+        console.print("[yellow]DEBUG: Checking process_document function")
+        console.print(f"[yellow]Location: {inspect.getfile(process_document)}")
+        console.print(f"[yellow]Signature: {inspect.signature(process_document)}")
+        console.print("=" * 60 + "\n")
     
     async def get_pending_tasks(self) -> list:
         """Fetch pending tasks from API."""
