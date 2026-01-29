@@ -20,6 +20,14 @@ from .processor import process_document
 
 console = Console()
 
+# DEBUG: Print imported function signature at module load time
+import inspect
+console.print("[yellow]=" * 60)
+console.print("[yellow]DEBUG: Checking process_document at import time")
+console.print(f"[yellow]Function location: {inspect.getfile(process_document)}")
+console.print(f"[yellow]Function signature: {inspect.signature(process_document)}")
+console.print("[yellow]=" * 60)
+
 
 class RagWorker:
     """RAG document processing worker."""
