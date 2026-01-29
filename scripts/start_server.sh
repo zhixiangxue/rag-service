@@ -69,6 +69,36 @@ echo "[3/4] Changed to project root: $PROJECT_ROOT"
 # Run as module: python -m rag-service.app.main
 echo "[4/4] Starting server (python -m rag-service.app.main)..."
 echo ""
+
+# Debug: Show database configuration
+echo "========================================"
+echo "  Database Configuration"
+echo "========================================"
+python -c "
+import sys
+sys.path.insert(0, '$PROJECT_ROOT')
+from pathlib import Path
+try:
+    from dotenv import load_dotenv
+    import os
+    
+    # Load .env.local
+    env_file = Path('$PROJECT_ROOT/rag-service/.env.local')
+    if env_file.exists():
+        load_dotenv(env_file)
+        print(f'Loaded .env from: {env_file}')
+    
+    # Get DATABASE_PATH
+    db_path = os.getenv('DATABASE_PATH', './data/rag.db')
+    abs_db_path = Path(db_path).absolute()
+    
+    print(f'DATABASE_PATH (env):  {db_path}')
+    print(f'DATABASE_PATH (abs):  {abs_db_path}')
+    print(f'Parent dir exists:    {abs_db_path.parent.exists()}')
+    print(f'DB file exists:       {abs_db_path.exists()}')
+except Exception as e:
+    print(f'Error: {e}')
+"
 echo "========================================"
 echo ""
 python -m rag-service.app.main
