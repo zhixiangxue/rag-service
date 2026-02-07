@@ -2,6 +2,15 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List, TypeVar, Generic
 from datetime import datetime
+from enum import Enum
+
+
+# ============ Processing Mode ============
+
+class ProcessingMode(str, Enum):
+    """Document processing mode."""
+    CLASSIC = "classic"  # Chunk-based RAG
+    LOD = "lod"          # Level-of-Detail indexing
 
 
 # ============ Common Response Wrapper ============
@@ -74,6 +83,7 @@ class TaskResponse(BaseModel):
     task_id: str
     dataset_id: str
     doc_id: str
+    mode: str = "classic"
     status: str  # PENDING, PROCESSING, COMPLETED, FAILED
     progress: int  # 0-100
     error_message: Optional[Dict[str, Any]] = None
@@ -129,6 +139,18 @@ class UnitResult(BaseModel):
 
 class QueryResponse(BaseModel):
     results: List[UnitResult]
+
+
+# ============ Tree Query ============
+
+class TreeQueryRequest(BaseModel):
+    """Tree query request for tree-based retrieval."""
+    query: str
+    unit_id: str
+    # SimpleRetriever params
+    max_depth: int = Field(default=5, ge=1, le=10)
+    # MCTSRetriever params
+    preset: str = Field(default="balanced", pattern="^(fast|balanced|accurate|explore)$")
 
 
 # ============ Health ============

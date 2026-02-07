@@ -12,10 +12,47 @@ from ..schemas import (
 )
 from ..constants import TaskStatus, DocumentStatus
 
-router = APIRouter(prefix="/tasks", tags=["tasks"])
+router = APIRouter(tags=["tasks"])
 
 
-@router.get("", response_model=ApiResponse[List[TaskResponse]])
+@router.get("/datasets/{dataset_id}/tasks", response_model=ApiResponse[List[TaskResponse]])
+def list_tasks_by_dataset(dataset_id: str):
+    """Get all tasks for a specific dataset."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    # Check if dataset exists
+    cursor.execute("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    cursor.execute(
+        "SELECT * FROM tasks WHERE dataset_id = ? ORDER BY created_at DESC",
+        (dataset_id,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    
+    results = []
+    for row in rows:
+        error_message = json.loads(row["error_message"]) if row["error_message"] else None
+        results.append(TaskResponse(
+            task_id=str(row["id"]),
+            dataset_id=str(row["dataset_id"]),
+            doc_id=str(row["doc_id"]),
+            mode=row["mode"] if "mode" in row.keys() else "classic",
+            status=row["status"],
+            progress=row["progress"],
+            error_message=error_message,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"]
+        ))
+    
+    return ApiResponse(success=True, code=200, data=results)
+
+
+@router.get("/tasks", response_model=ApiResponse[List[TaskResponse]])
 def get_all_tasks(limit: int = 10, status: Optional[str] = None):
     """Get all tasks (optionally filtered by status).
     
@@ -57,7 +94,7 @@ def get_all_tasks(limit: int = 10, status: Optional[str] = None):
     return ApiResponse(success=True, code=200, data=results)
 
 
-@router.get("/pending", response_model=ApiResponse[List[TaskResponse]])
+@router.get("/tasks/pending", response_model=ApiResponse[List[TaskResponse]])
 def get_pending_tasks(limit: int = 10):
     """Get pending tasks for worker to process."""
     conn = get_connection()
@@ -77,6 +114,7 @@ def get_pending_tasks(limit: int = 10):
             task_id=str(row["id"]),
             dataset_id=str(row["dataset_id"]),
             doc_id=str(row["doc_id"]),
+            mode=row["mode"] if "mode" in row.keys() else "classic",
             status=row["status"],
             progress=row["progress"],
             error_message=error_message,
@@ -87,7 +125,7 @@ def get_pending_tasks(limit: int = 10):
     return ApiResponse(success=True, code=200, data=results)
 
 
-@router.get("/{task_id}", response_model=ApiResponse[TaskResponse])
+@router.get("/tasks/{task_id}", response_model=ApiResponse[TaskResponse])
 def get_task(task_id: str):
     """Get task status by ID."""
     conn = get_connection()
@@ -106,6 +144,7 @@ def get_task(task_id: str):
         task_id=str(row["id"]),
         dataset_id=str(row["dataset_id"]),
         doc_id=str(row["doc_id"]),
+        mode=row["mode"] if "mode" in row.keys() else "classic",
         status=row["status"],
         progress=row["progress"],
         error_message=error_message,
@@ -116,7 +155,7 @@ def get_task(task_id: str):
     return ApiResponse(success=True, code=200, data=data)
 
 
-@router.patch("/{task_id}", response_model=ApiResponse[TaskResponse])
+@router.patch("/tasks/{task_id}", response_model=ApiResponse[TaskResponse])
 def update_task(task_id: str, update: TaskStatusUpdate):
     """Update task (status, progress, error, etc)."""
     conn = get_connection()
@@ -233,6 +272,7 @@ def update_task(task_id: str, update: TaskStatusUpdate):
         task_id=str(row["id"]),
         dataset_id=str(row["dataset_id"]),
         doc_id=str(row["doc_id"]),
+        mode=row["mode"] if "mode" in row.keys() else "classic",
         status=row["status"],
         progress=row["progress"],
         error_message=error_message,

@@ -1,11 +1,11 @@
 """Query API endpoints."""
 from fastapi import APIRouter, HTTPException
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 from cachetools import cached, TTLCache
 from cachetools.keys import hashkey
 import threading
 
-from ..schemas import QueryRequest, UnitResult, ApiResponse
+from ..schemas import QueryRequest, UnitResult, ApiResponse, TreeQueryRequest
 from ..database import get_connection
 from .. import config
 from zag.embedders import Embedder
@@ -187,3 +187,119 @@ async def query_fusion(dataset_id: str, request: QueryRequest):
     
     # TODO: Implement fusion search
     raise HTTPException(status_code=501, detail="Fusion search not implemented yet")
+
+
+@router.post("/{dataset_id}/query/tree/simple", response_model=ApiResponse[Dict[str, Any]])
+async def query_tree_simple(dataset_id: str, request: TreeQueryRequest):
+    """Tree query using SimpleRetriever.
+    
+    Args:
+        dataset_id: Dataset ID
+        request: Tree query request with query, unit_id, max_depth
+    
+    Returns:
+        Tree retrieval result with nodes and path
+    """
+    try:
+        # Get dataset info
+        collection_name, engine = get_dataset_info(dataset_id)
+        
+        # Initialize embedder
+        embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
+        
+        # Initialize vector store
+        vector_store = QdrantVectorStore.server(
+            host=config.VECTOR_STORE_HOST,
+            port=config.VECTOR_STORE_PORT,
+            prefer_grpc=False,
+            collection_name=collection_name,
+            embedder=embedder,
+            timeout=60
+        )
+        
+        # Initialize SimpleRetriever
+        from zag.retrievers.tree import SimpleRetriever
+        retriever = SimpleRetriever(
+            vector_store=vector_store,
+            llm_uri=config.LLM_URI_TREE_RETRIEVAL,
+            api_key=config.OPENAI_API_KEY,
+            max_depth=request.max_depth
+        )
+        
+        # Retrieve (internally fetches unit and parses tree)
+        result = await retriever.retrieve(request.query, request.unit_id)
+        
+        # Build response
+        return ApiResponse(
+            success=True,
+            code=200,
+            data={
+                "nodes": [node.model_dump() for node in result.nodes],
+                "path": result.path,
+                "unit_id": request.unit_id
+            }
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Tree query failed: {str(e)}")
+
+
+@router.post("/{dataset_id}/query/tree/mcts", response_model=ApiResponse[Dict[str, Any]])
+async def query_tree_mcts(dataset_id: str, request: TreeQueryRequest):
+    """Tree query using MCTSRetriever.
+    
+    Args:
+        dataset_id: Dataset ID
+        request: Tree query request with query, unit_id, preset
+    
+    Returns:
+        Tree retrieval result with nodes and path
+    """
+    try:
+        # Get dataset info
+        collection_name, engine = get_dataset_info(dataset_id)
+        
+        # Initialize embedder
+        embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
+        
+        # Initialize vector store
+        vector_store = QdrantVectorStore.server(
+            host=config.VECTOR_STORE_HOST,
+            port=config.VECTOR_STORE_PORT,
+            prefer_grpc=False,
+            collection_name=collection_name,
+            embedder=embedder,
+            timeout=60
+        )
+        
+        # Initialize MCTSRetriever
+        from zag.retrievers.tree import MCTSRetriever
+        retriever = MCTSRetriever.from_preset(
+            preset_name=request.preset,
+            api_key=config.OPENAI_API_KEY,
+            verbose=False,
+            vector_store=vector_store
+        )
+        
+        # Retrieve (internally fetches unit and parses tree)
+        result = await retriever.retrieve(request.query, request.unit_id)
+        
+        # Build response
+        return ApiResponse(
+            success=True,
+            code=200,
+            data={
+                "nodes": [node.model_dump() for node in result.nodes],
+                "path": result.path,
+                "unit_id": request.unit_id
+            }
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Tree query failed: {str(e)}")
+
+

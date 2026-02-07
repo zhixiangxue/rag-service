@@ -2,10 +2,15 @@
 import sqlite3
 from typing import Optional
 from datetime import datetime
-import uuid
+from nanoid import generate
 from pathlib import Path
 
 from .config import DATABASE_PATH
+
+
+def generate_id() -> str:
+    """Generate nanoid for primary key."""
+    return generate()
 
 
 def get_connection():
@@ -27,7 +32,7 @@ def init_db():
     # Dataset table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS datasets (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             description TEXT,
             engine TEXT NOT NULL DEFAULT 'qdrant',
@@ -40,8 +45,8 @@ def init_db():
     # Document table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS documents (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            dataset_id INTEGER NOT NULL,
+            id TEXT PRIMARY KEY,
+            dataset_id TEXT NOT NULL,
             file_name TEXT NOT NULL,
             file_path TEXT NOT NULL,
             workspace_dir TEXT NOT NULL,
@@ -49,7 +54,7 @@ def init_db():
             file_type TEXT NOT NULL,
             file_hash TEXT,
             status TEXT NOT NULL,
-            task_id INTEGER,
+            task_id TEXT,
             unit_count INTEGER DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -66,9 +71,10 @@ def init_db():
     # Task table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            dataset_id INTEGER NOT NULL,
-            doc_id INTEGER NOT NULL,
+            id TEXT PRIMARY KEY,
+            dataset_id TEXT NOT NULL,
+            doc_id TEXT NOT NULL,
+            mode TEXT NOT NULL DEFAULT 'classic',
             status TEXT NOT NULL,
             progress INTEGER DEFAULT 0,
             error_message TEXT,

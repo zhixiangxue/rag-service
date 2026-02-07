@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from typing import List
 import json
 
-from ..database import get_connection, now
+from ..database import get_connection, now, generate_id
 from ..schemas import DatasetCreate, DatasetUpdate, DatasetResponse, ApiResponse, MessageResponse
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
@@ -25,10 +25,10 @@ def _get_cache_invalidator():
 
 @router.post("", response_model=ApiResponse[DatasetResponse])
 def create_dataset(dataset: DatasetCreate):
-    """Create a new dataset or return existing one if name already exists."""
-    # TODO: Call zag to create vector store collection
-    # Should use zag's abstraction layer instead of directly calling Qdrant
-    # This allows zag to handle different vector database engines
+    """Create a new dataset and corresponding vector store collection."""
+    from zag.storages.vector import QdrantVectorStore
+    from zag.embedders import Embedder
+    from .. import config
     
     conn = get_connection()
     cursor = conn.cursor()
@@ -56,22 +56,46 @@ def create_dataset(dataset: DatasetCreate):
     # Create new dataset
     timestamp = now()
     config_json = json.dumps(dataset.config) if dataset.config else None
+    dataset_id = generate_id()
     
     try:
         cursor.execute(
             """
-            INSERT INTO datasets (name, description, engine, config, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO datasets (id, name, description, engine, config, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (dataset.name, dataset.description, dataset.engine, config_json, timestamp, timestamp)
+            (dataset_id, dataset.name, dataset.description, dataset.engine, config_json, timestamp, timestamp)
         )
         conn.commit()
-        dataset_id = cursor.lastrowid
     except Exception as e:
         conn.close()
         raise HTTPException(status_code=500, detail=f"Failed to create dataset: {str(e)}")
     
     conn.close()
+    
+    # Create vector store collection
+    try:
+        embedder = Embedder(
+            config.EMBEDDING_URI,
+            api_key=config.OPENAI_API_KEY
+        )
+        vector_store = QdrantVectorStore.server(
+            host=config.VECTOR_STORE_HOST,
+            port=config.VECTOR_STORE_PORT,
+            grpc_port=config.VECTOR_STORE_GRPC_PORT,
+            prefer_grpc=True,
+            collection_name=dataset.name,
+            embedder=embedder
+        )
+        # Collection is auto-created in __init__ via _ensure_collection
+    except Exception as e:
+        # Rollback database if vector store creation fails
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM datasets WHERE id = ?", (dataset_id,))
+        conn.commit()
+        conn.close()
+        raise HTTPException(status_code=500, detail=f"Failed to create vector collection: {str(e)}")
     
     data = DatasetResponse(
         dataset_id=str(dataset_id),
@@ -218,23 +242,46 @@ def update_dataset(dataset_id: str, dataset: DatasetUpdate):
 
 @router.delete("/{dataset_id}", response_model=ApiResponse[MessageResponse])
 def delete_dataset(dataset_id: str):
-    """Delete dataset."""
-    # TODO: Call zag to delete vector store collection
-    # Should use zag's abstraction layer instead of directly calling Qdrant
+    """Delete dataset and corresponding vector store collection."""
+    from zag.storages.vector import QdrantVectorStore
+    from zag.embedders import Embedder
+    from .. import config
     
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Check if dataset exists
+    # Check if dataset exists and get collection name
     cursor.execute("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
-    if not cursor.fetchone():
+    row = cursor.fetchone()
+    if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Dataset not found")
     
-    # Delete dataset
+    collection_name = row["name"]
+    
+    # Delete from database
     cursor.execute("DELETE FROM datasets WHERE id = ?", (dataset_id,))
     conn.commit()
     conn.close()
+    
+    # Delete vector store collection
+    try:
+        embedder = Embedder(
+            config.EMBEDDING_URI,
+            api_key=config.OPENAI_API_KEY
+        )
+        vector_store = QdrantVectorStore.server(
+            host=config.VECTOR_STORE_HOST,
+            port=config.VECTOR_STORE_PORT,
+            grpc_port=config.VECTOR_STORE_GRPC_PORT,
+            prefer_grpc=True,
+            collection_name=collection_name,
+            embedder=embedder
+        )
+        vector_store.delete_collection()
+    except Exception as e:
+        # Log but don't fail the API call (collection might not exist)
+        print(f"Warning: Failed to delete vector collection {collection_name}: {e}")
     
     # Invalidate cache
     invalidate_fn = _get_cache_invalidator()

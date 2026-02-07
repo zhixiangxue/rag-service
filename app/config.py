@@ -1,9 +1,9 @@
 """Application configuration."""
 import os
-from ..env_loader import load_environment
+from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_environment()
+# Load .env file
+load_dotenv()
 
 # ============================================
 # Database Configuration
@@ -16,6 +16,7 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", "./rag_service.db")
 VECTOR_STORE_TYPE = os.getenv("VECTOR_STORE_TYPE", "qdrant")
 VECTOR_STORE_HOST = os.getenv("VECTOR_STORE_HOST", "localhost")
 VECTOR_STORE_PORT = int(os.getenv("VECTOR_STORE_PORT", "6333"))
+VECTOR_STORE_GRPC_PORT = int(os.getenv("VECTOR_STORE_GRPC_PORT", "6334"))
 
 # TODO: Remove these default fallback settings when dataset management is fully implemented
 # Currently used as fallback when dataset_id is not found in database
@@ -29,6 +30,11 @@ EMBEDDING_URI = os.getenv("EMBEDDING_URI", "openai/text-embedding-3-small")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 BAILIAN_API_KEY = os.getenv("BAILIAN_API_KEY")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
+
+# ============================================
+# LLM Configuration
+# ============================================
+LLM_URI_TREE_RETRIEVAL = os.getenv("LLM_URI_TREE_RETRIEVAL", "openai/gpt-4o-mini")
 
 # ============================================
 # File Storage Configuration

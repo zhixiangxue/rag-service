@@ -13,7 +13,18 @@ Write-Host "========================================`n" -ForegroundColor Cyan
 $scriptDir = $PSScriptRoot
 $ragServiceDir = Join-Path $scriptDir ".."
 Set-Location $ragServiceDir
-Write-Host "[1/4] Working directory: $ragServiceDir" -ForegroundColor Yellow
+
+# Validate rag-service directory structure
+if (-not (Test-Path (Join-Path $ragServiceDir "app\main.py"))) {
+    Write-Host "`n❌ ERROR: Invalid rag-service directory structure" -ForegroundColor Red
+    Write-Host "Expected: $ragServiceDir\app\main.py" -ForegroundColor Yellow
+    Write-Host "`nThis script must be run from:" -ForegroundColor Yellow
+    Write-Host "  rag-service/scripts/start_server.ps1" -ForegroundColor Yellow
+    Write-Host "`nCurrent location: $ragServiceDir" -ForegroundColor Yellow
+    exit 1
+}
+
+Write-Host "[1/3] Working directory: $ragServiceDir" -ForegroundColor Yellow
 
 # Function to find virtual environment
 function Find-VirtualEnv {
@@ -44,7 +55,7 @@ function Find-VirtualEnv {
 $venvPath = Find-VirtualEnv -StartPath $ragServiceDir
 
 if ($venvPath) {
-    Write-Host "[2/4] Virtual environment: $venvPath" -ForegroundColor Green
+    Write-Host "[2/3] Virtual environment: $venvPath" -ForegroundColor Green
     & $venvPath
 } else {
     Write-Host "`n❌ ERROR: Virtual environment not found" -ForegroundColor Red
@@ -58,13 +69,7 @@ if ($venvPath) {
     exit 1
 }
 
-# Start server (working directory must be zag-ai/ for relative imports)
-# Change to project root (zag-ai/) to allow relative imports
-$projectRoot = Join-Path $ragServiceDir ".."
-Set-Location $projectRoot
-Write-Host "[3/4] Changed to project root: $projectRoot" -ForegroundColor Green
-
-# Run as module: python -m rag-service.app.main
-Write-Host "[4/4] Starting server (python -m rag-service.app.main)..." -ForegroundColor Green
+# Run as module from rag-service directory
+Write-Host "[3/3] Starting server (python -m app.main)..." -ForegroundColor Green
 Write-Host "`n========================================`n" -ForegroundColor Cyan
-python -m rag-service.app.main
+python -m app.main

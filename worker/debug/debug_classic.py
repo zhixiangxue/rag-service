@@ -1,12 +1,11 @@
 """
-Local debug script for document processing pipeline.
+Local debug script for classic RAG indexing.
 
-This script allows testing the document processing pipeline without API/DB dependencies.
+This script allows testing the classic RAG pipeline without API/DB dependencies.
 Simply run it and input the PDF file path when prompted.
 
 Usage:
-    cd /Users/zhixiang.xue/zeitro/zag-ai/
-    python -m rag-service.worker.debug_processor
+    python -m rag-service.worker.debug.debug_classic
     
     # Then input file path (drag & drop supported):
     > /path/to/file.pdf
@@ -20,9 +19,9 @@ from datetime import datetime
 from rich.console import Console
 from rich.panel import Panel
 
-from . import config
+from .. import config
 
-# Force localhost BEFORE importing processor (processor imports config values at module level)
+# Force localhost BEFORE importing indexer
 def force_localhost_config():
     """Force all service endpoints to localhost for local debugging."""
     if config.VECTOR_STORE_HOST != "localhost":
@@ -32,24 +31,18 @@ def force_localhost_config():
 
 force_localhost_config()
 
-# NOW import processor (after config modification)
-from .processor import process_document
+# NOW import indexer (after config modification)
+from ..indexers.classic import index_classic
 
-# ========== Configuration (loaded from .env) ==========
-# All configs are read from worker/.env via config module
-# Override here if needed for specific debugging:
+# Validate services before proceeding
+config.validate_services()
 
-# Debug-specific config
-DEBUG_WORKSPACE_ROOT = Path("./.workspace/debug")  # Fixed workspace for debug runs
-
-# Derived config (not in config.py, only for debug script)
+# ========== Configuration ==========
+DEBUG_WORKSPACE_ROOT = Path("./.workspace/debug")
 LLM_URI = f"{config.LLM_PROVIDER}/{config.LLM_MODEL}"
 VECTOR_STORE_GRPC_PORT = int(os.getenv("VECTOR_STORE_GRPC_PORT", "16334"))
-COLLECTION_NAME = "debug_collection"  # Debug-only collection, avoid production data
-MEILISEARCH_URL = config.MEILISEARCH_HOST
-MEILISEARCH_INDEX_NAME = "debug_index"  # Debug-only index, avoid production data
-
-# =======================================================
+COLLECTION_NAME = "debug_collection"
+MEILISEARCH_INDEX_NAME = "debug_index"
 
 console = Console()
 
@@ -78,30 +71,26 @@ def normalize_path(path_str: str) -> Path:
     - PowerShell prefix: & 'path/to/file.pdf'
     - Plain paths: /path/to/file.pdf
     """
-    # Remove leading/trailing whitespace
     path_str = path_str.strip()
     
-    # Remove PowerShell command prefix (& at the beginning)
     if path_str.startswith('& '):
         path_str = path_str[2:].strip()
     
-    # Remove surrounding quotes (single or double)
     if (path_str.startswith("'") and path_str.endswith("'")) or \
        (path_str.startswith('"') and path_str.endswith('"')):
         path_str = path_str[1:-1]
     
-    # Handle escaped spaces (unescape them)
     path_str = path_str.replace("\\ ", " ")
     
     return Path(path_str)
 
 
 async def debug_process(pdf_path: Path):
-    """Process document without API/DB dependencies."""
+    """Process document using classic RAG indexing."""
     
     console.print("\n" + "=" * 70)
     console.print(Panel.fit(
-        "[bold cyan]Document Processor Debug Mode[/bold cyan]\n\n"
+        "[bold cyan]Classic RAG Indexing - Debug Mode[/bold cyan]\n\n"
         f"PDF: {pdf_path.name}\n"
         f"Size: {pdf_path.stat().st_size / 1024 / 1024:.2f} MB",
         border_style="cyan"
@@ -116,13 +105,13 @@ async def debug_process(pdf_path: Path):
     start_time = datetime.now()
     
     try:
-        result = await process_document(
+        result = await index_classic(
             file_path=pdf_path,
             workspace_dir=workspace_dir,
             collection_name=COLLECTION_NAME,
             meilisearch_index_name=MEILISEARCH_INDEX_NAME,
-            custom_metadata=None,  # No custom metadata in debug mode
-            on_progress=print_progress_callback,  # Real-time progress
+            custom_metadata=None,
+            on_progress=print_progress_callback,
             vector_store_grpc_port=VECTOR_STORE_GRPC_PORT
         )
         
@@ -131,7 +120,7 @@ async def debug_process(pdf_path: Path):
         # Print summary
         console.print("\n" + "=" * 70)
         console.print(Panel.fit(
-            f"[bold green]✓ Processing Complete[/bold green]\n\n"
+            f"[bold green]✓ Classic RAG Indexing Complete[/bold green]\n\n"
             f"Units created: {result['unit_count']}\n"
             f"Parts processed: {result['parts_processed']}\n"
             f"Source hash: {result['source_hash']}\n"
@@ -156,21 +145,21 @@ async def main():
     
     console.print("\n" + "=" * 70)
     console.print(Panel.fit(
-        "[bold cyan]RAG Document Processor - Debug Mode[/bold cyan]\n\n"
-        "Process a PDF file without API/DB dependencies.\n"
+        "[bold cyan]Classic RAG Indexing - Debug Mode[/bold cyan]\n\n"
+        "Process a PDF file using classic RAG (chunk-based) indexing.\n"
         "Please verify configuration before proceeding.",
         border_style="cyan"
     ))
     console.print("=" * 70 + "\n")
     
-    # Show config first for user confirmation
+    # Show config
     console.print("[bold]Configuration:[/bold]")
     console.print(f"  LLM: {config.LLM_PROVIDER}/{config.LLM_MODEL}")
     console.print(f"  Embedding: {config.EMBEDDING_URI}")
     console.print(f"  Vector Store: {config.VECTOR_STORE_HOST}:{config.VECTOR_STORE_PORT} (gRPC: {VECTOR_STORE_GRPC_PORT})")
     console.print(f"  Meilisearch: {config.MEILISEARCH_HOST}")
-    console.print(f"  Collection: {COLLECTION_NAME}")
-    console.print(f"  Index: {MEILISEARCH_INDEX_NAME}\n")
+    console.print(f"  Collection(VectorDB): {COLLECTION_NAME}")
+    console.print(f"  Index(Meilisearch): {MEILISEARCH_INDEX_NAME}\n")
     
     # Ask for confirmation
     console.print("[bold yellow]Continue with this configuration? [Y/n]:[/bold yellow] ", end="")
@@ -188,7 +177,7 @@ async def main():
             console.print("[red]No file path provided[/red]")
             return 1
         
-        # Normalize path (handle quotes and escaped spaces)
+        # Normalize path
         pdf_path = normalize_path(path_input)
         
         # Validate file

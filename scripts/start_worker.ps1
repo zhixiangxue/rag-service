@@ -1,15 +1,17 @@
 # RAG Worker startup script for Windows
 # PowerShell version
 
-Write-Host "Starting RAG Worker..." -ForegroundColor Green
-Write-Host "Worker will poll API for tasks..." -ForegroundColor Cyan
-Write-Host ""
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "  RAG Worker Startup" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "API Endpoint: http://localhost:8000" -ForegroundColor Green
+Write-Host "========================================`n" -ForegroundColor Cyan
 
 # Get script directory and navigate to rag-service root
 $scriptDir = $PSScriptRoot
 $ragServiceDir = Join-Path $scriptDir ".."
 Set-Location $ragServiceDir
-Write-Host "Working directory: $ragServiceDir" -ForegroundColor Yellow
+Write-Host "[1/3] Working directory: $ragServiceDir" -ForegroundColor Yellow
 
 # Function to find virtual environment
 function Find-VirtualEnv {
@@ -40,28 +42,21 @@ function Find-VirtualEnv {
 $venvPath = Find-VirtualEnv -StartPath $ragServiceDir
 
 if ($venvPath) {
-    Write-Host "Activating virtual environment: $venvPath" -ForegroundColor Green
+    Write-Host "[2/3] Virtual environment: $venvPath" -ForegroundColor Green
     & $venvPath
 } else {
-    Write-Host "Error: Virtual environment not found" -ForegroundColor Red
+    Write-Host "`n❌ ERROR: Virtual environment not found" -ForegroundColor Red
     Write-Host "Searched in:" -ForegroundColor Yellow
     Write-Host "  - $ragServiceDir\.venv" -ForegroundColor Yellow
     Write-Host "  - $ragServiceDir\venv" -ForegroundColor Yellow
     Write-Host "  - $((Join-Path $ragServiceDir ".."))\.venv" -ForegroundColor Yellow
     Write-Host "  - $((Join-Path $ragServiceDir ".."))\venv" -ForegroundColor Yellow
-    Write-Host "" -ForegroundColor Yellow
-    Write-Host "Please create virtual environment first:" -ForegroundColor Yellow
-    Write-Host "  python -m venv .venv" -ForegroundColor Yellow
+    Write-Host "`nPlease create virtual environment first:" -ForegroundColor Yellow
+    Write-Host "  python -m venv .venv`n" -ForegroundColor Yellow
     exit 1
 }
 
-# Start worker (working directory must be zag-ai/ for relative imports)
-Write-Host "Starting worker..." -ForegroundColor Green
-
-# Change to project root (zag-ai/) to allow relative imports
-$projectRoot = Join-Path $ragServiceDir ".."
-Set-Location $projectRoot
-Write-Host "Changed to project root: $projectRoot" -ForegroundColor Yellow
-
-# Run as module: python -m rag-service.worker.worker
-python -m rag-service.worker.worker
+# Run as module from rag-service directory
+Write-Host "[3/3] Starting worker (python -m worker.main)..." -ForegroundColor Green
+Write-Host "`n========================================`n" -ForegroundColor Cyan
+python -m worker.main

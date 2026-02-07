@@ -13,7 +13,7 @@ echo ""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RAG_SERVICE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$RAG_SERVICE_DIR"
-echo "[1/4] Working directory: $RAG_SERVICE_DIR"
+echo "[1/3] Working directory: $RAG_SERVICE_DIR"
 
 # Function to find virtual environment
 find_venv() {
@@ -42,7 +42,7 @@ find_venv() {
 VENV_PATH=$(find_venv "$RAG_SERVICE_DIR")
 
 if [ -n "$VENV_PATH" ]; then
-    echo "[2/4] Virtual environment: $VENV_PATH"
+    echo "[2/3] Virtual environment: $VENV_PATH"
     source "$VENV_PATH"
 else
     echo ""
@@ -59,14 +59,9 @@ else
     exit 1
 fi
 
-# Change to project root (zag-ai/) to allow relative imports
-PROJECT_ROOT="$(cd "$RAG_SERVICE_DIR/.." && pwd)"
-cd "$PROJECT_ROOT"
-echo "[3/4] Changed to project root: $PROJECT_ROOT"
-
-# Run worker as module: python -m rag-service.worker.main
-echo "[4/4] Starting worker (python -m rag-service.worker.main)..."
+# Run as module from rag-service directory
+echo "[3/3] Starting worker (python -m worker.main)..."
 echo ""
 echo "========================================"
 echo ""
-python -m rag-service.worker.main
+python -m worker.main

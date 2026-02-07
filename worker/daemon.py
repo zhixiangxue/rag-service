@@ -9,14 +9,16 @@ import httpx
 import json
 from pathlib import Path
 from typing import Optional, Dict, Any
+from datetime import datetime
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from ..app.constants import TaskStatus
+from .constants import TaskStatus
 from . import config
-from .processor import process_document
+from .indexers.classic import index_classic
+from .indexers.lod import index_lod
 
 console = Console()
 
@@ -28,14 +30,6 @@ class RagWorker:
         self.api_base_url = config.API_BASE_URL
         self.poll_interval = config.WORKER_POLL_INTERVAL
         self.running = False
-        
-        # DEBUG: Print imported function signature
-        import inspect
-        console.print("\n" + "=" * 60)
-        console.print("[yellow]DEBUG: Checking process_document function")
-        console.print(f"[yellow]Location: {inspect.getfile(process_document)}")
-        console.print(f"[yellow]Signature: {inspect.signature(process_document)}")
-        console.print("=" * 60 + "\n")
     
     async def get_pending_tasks(self) -> list:
         """Fetch pending tasks from API."""
@@ -86,6 +80,7 @@ class RagWorker:
         task_id = task["task_id"]
         dataset_id = task["dataset_id"]
         doc_id = task["doc_id"]
+        mode = task.get("mode", "classic")  # Default to classic if not specified
         
         console.print("\n" + "=" * 80)
         console.print(f"[bold cyan]Processing Task {task_id}[/bold cyan]")
@@ -119,6 +114,7 @@ class RagWorker:
             mapping_table.add_column("Target", style="green bold")
             
             mapping_table.add_row("File", "-->", file_path.name)
+            mapping_table.add_row("Mode", "-->", mode.upper())
             mapping_table.add_row("Collection", "-->", collection_name)
             mapping_table.add_row("Vector Store", "-->", f"Qdrant @ {config.VECTOR_STORE_HOST}:{config.VECTOR_STORE_PORT}")
             
@@ -137,15 +133,25 @@ class RagWorker:
                 except Exception as e:
                     console.print(f"[yellow]Progress update failed: {e}[/yellow]")
             
-            result = await process_document(
-                file_path=file_path,
-                workspace_dir=workspace_dir,
-                collection_name=collection_name,  # Use dataset's collection_name
-                meilisearch_index_name=collection_name,  # Use same name for index
-                custom_metadata=None,  # TODO: Load from doc_info if available
-                on_progress=update_progress,  # 传递 async 回调
-                vector_store_grpc_port=config.VECTOR_STORE_GRPC_PORT
-            )
+            # Route to different indexer based on mode
+            if mode == "lod":
+                result = await index_lod(
+                    file_path=file_path,
+                    collection_name=collection_name,
+                    custom_metadata=None,
+                    on_progress=update_progress,
+                    vector_store_grpc_port=config.VECTOR_STORE_GRPC_PORT
+                )
+            else:  # classic mode (default)
+                result = await index_classic(
+                    file_path=file_path,
+                    workspace_dir=workspace_dir,
+                    collection_name=collection_name,  # Use dataset's collection_name
+                    meilisearch_index_name=collection_name,  # Use same name for index
+                    custom_metadata=None,
+                    on_progress=update_progress,  # 传递 async 回调
+                    vector_store_grpc_port=config.VECTOR_STORE_GRPC_PORT
+                )
             
             # Complete task with actual unit count
             await self.update_task_status(
@@ -183,6 +189,8 @@ class RagWorker:
         
         while self.running:
             try:
+                console.print(f"[dim]Polling tasks... ({datetime.now().strftime('%H:%M:%S')})[/dim]")
+                
                 # Fetch pending tasks
                 tasks = await self.get_pending_tasks()
                 

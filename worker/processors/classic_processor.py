@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Mortgage Document Processor
+Classic Document Processor
 
-A production-ready document processor for mortgage guidelines.
+A production-ready document processor for classic RAG (chunk-based) indexing.
 Designed for Celery integration with independent, reusable methods.
 
 Key Features:
@@ -45,11 +45,13 @@ from zag.schemas.pdf import PDF
 from zag.schemas.unit import TextUnit, TableUnit
 from zag.utils.hash import calculate_file_hash
 
+from ..constants import ProcessingMode
+
 console = Console()
 
 
-class MortgageDocumentProcessor:
-    """ Document processor for mortgage guidelines """
+class ClassicDocumentProcessor:
+    """Document processor for classic RAG (chunk-based) indexing."""
 
     def __init__(self, output_root: Path):
         """
@@ -609,8 +611,7 @@ class MortgageDocumentProcessor:
         qdrant_host: str = "localhost",
         qdrant_port: int = 6333,
         qdrant_grpc_port: int = 6334,
-        collection_name: str = "mortgage_guidelines",
-        clear_existing: bool = True,
+        collection_name: str = "debug_collection",
         api_key: Optional[str] = None
     ) -> VectorIndexer:
         """
@@ -622,7 +623,6 @@ class MortgageDocumentProcessor:
             qdrant_port: Qdrant HTTP port (for REST API)
             qdrant_grpc_port: Qdrant gRPC port (for high performance)
             collection_name: Collection name
-            clear_existing: Clear existing index before building
             api_key: API key for embedding service (if needed)
 
         Returns:
@@ -653,8 +653,13 @@ class MortgageDocumentProcessor:
 
         vector_indexer = VectorIndexer(vector_store=vector_store)
 
-        if clear_existing:
-            await vector_indexer.aclear()
+        # Clear existing data for this document before indexing
+        if self.document and self.document.doc_id:
+            console.print(f"  🗑️  Clearing old classic data for doc_id: {self.document.doc_id}")
+            await vector_store.adelete_by_filters({
+                "doc_id": self.document.doc_id,
+                "metadata.custom.mode": ProcessingMode.CLASSIC
+            })
 
         # Use upsert instead of add for safety (can retry without errors)
         await vector_indexer.aupsert(self.units)
@@ -669,8 +674,7 @@ class MortgageDocumentProcessor:
         self,
         meilisearch_url: str,
         index_name: str = "mortgage_guidelines",
-        primary_key: str = "unit_id",
-        clear_existing: bool = True
+        primary_key: str = "unit_id"
     ) -> FullTextIndexer:
         """
         Build fulltext index with Meilisearch
@@ -679,7 +683,6 @@ class MortgageDocumentProcessor:
             meilisearch_url: Meilisearch server URL
             index_name: Index name
             primary_key: Primary key field
-            clear_existing: Clear existing index before building
 
         Returns:
             FullTextIndexer instance
@@ -701,8 +704,8 @@ class MortgageDocumentProcessor:
             primary_key=primary_key
         )
 
-        if clear_existing:
-            fulltext_indexer.clear()
+        # Note: Meilisearch uses upsert by default, so we don't need to delete old data
+        # The units with same unit_id will be automatically replaced
 
         fulltext_indexer.configure_settings(
             searchable_attributes=["content", "context_path"],

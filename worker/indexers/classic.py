@@ -1,120 +1,26 @@
-"""Document processing pipeline - integrates prepare_manifest and import logic."""
-import json
+"""Classic RAG indexer - Split documents into chunks and index."""
 import time
 from pathlib import Path
-from PyPDF2 import PdfReader
 from rich.console import Console
 from typing import Dict, Any, Optional
 
-from .document_processor import MortgageDocumentProcessor
-from .extract_pdf_pages import split_pdf_with_overlap
-from .config import (
+from ..processors.classic_processor import ClassicDocumentProcessor
+from ..utils.manifest import prepare_single_file_manifest
+from ..constants import ProcessingMode
+from ..config import (
     LLM_PROVIDER, LLM_MODEL, LLM_API_KEY,
     EMBEDDING_URI, OPENAI_API_KEY,
     VECTOR_STORE_HOST, VECTOR_STORE_PORT,
     MEILISEARCH_HOST, MEILISEARCH_API_KEY,
     USE_GPU, NUM_THREADS,
     MAX_CHUNK_TOKENS, TABLE_MAX_TOKENS, TARGET_TOKEN_SIZE,
-    MAX_PAGES_PER_PART, NUM_KEYWORDS
+    NUM_KEYWORDS
 )
-from zag.utils.hash import calculate_file_hash
 
 console = Console()
 
 
-async def prepare_single_file_manifest(
-    file_path: Path,
-    workspace_dir: Path,
-    custom_metadata: Optional[Dict[str, Any]] = None
-) -> dict:
-    """
-    Prepare manifest for a single file (adapted from prepare_manifest.py).
-    
-    Args:
-        file_path: Path to the PDF file
-        workspace_dir: Working directory for this file
-        custom_metadata: Optional business metadata
-    
-    Returns:
-        Manifest dict with processing tasks
-    """
-    console.print(f"\n[cyan]📋 Preparing manifest for: {file_path.name}[/cyan]")
-    
-    # Calculate source file hash
-    source_hash = calculate_file_hash(file_path)
-    console.print(f"   🔑 Hash: {source_hash}")
-    
-    # Check page count
-    try:
-        reader = PdfReader(file_path)
-        total_pages = len(reader.pages)
-        console.print(f"   📖 Pages: {total_pages}")
-    except Exception as e:
-        raise Exception(f"Failed to read PDF: {e}")
-    
-    # Create temp_parts directory inside workspace
-    temp_dir = workspace_dir / "temp_parts"
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Create task
-    task = {
-        "source_file": str(file_path.absolute()),
-        "source_hash": source_hash,
-        "metadata": custom_metadata or {},
-        "total_pages": total_pages,
-        "parts": []
-    }
-    
-    # Split if needed
-    if total_pages > MAX_PAGES_PER_PART:
-        console.print(f"   ✂️  Large file, splitting into parts...")
-        
-        try:
-            part_files = split_pdf_with_overlap(
-                input_pdf=str(file_path),
-                output_dir=str(temp_dir),
-                pages_per_part=MAX_PAGES_PER_PART,
-                overlap_pages=0
-            )
-            
-            for part_file in part_files:
-                part_name = Path(part_file).stem
-                page_range = part_name.split('_pages_')[-1] if '_pages_' in part_name else "unknown"
-                
-                task["parts"].append({
-                    "file": str(part_file),
-                    "page_range": page_range
-                })
-            
-            console.print(f"   ✅ Split into {len(part_files)} parts")
-            
-        except Exception as e:
-            console.print(f"   [yellow]⚠️  Failed to split, using original: {e}[/yellow]")
-            # Fallback: use original file
-            task["parts"].append({
-                "file": str(file_path.absolute()),
-                "page_range": f"1-{total_pages}"
-            })
-    else:
-        console.print(f"   ✅ Small file, no splitting needed")
-        task["parts"].append({
-            "file": str(file_path.absolute()),
-            "page_range": f"1-{total_pages}"
-        })
-    
-    # Save manifest to workspace
-    manifest = {"tasks": [task]}
-    manifest_path = workspace_dir / "manifest.json"
-    with open(manifest_path, 'w', encoding='utf-8') as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
-    
-    console.print(f"   💾 Manifest saved: {manifest_path}")
-    console.print(f"   📦 Parts to process: {len(task['parts'])}\n")
-    
-    return manifest
-
-
-async def process_document(
+async def index_classic(
     file_path: Path,
     workspace_dir: Path,
     collection_name: str,
@@ -124,38 +30,30 @@ async def process_document(
     vector_store_grpc_port: int = 6334
 ) -> Dict[str, Any]:
     """
-    Process document (adapted from import.py).
+    Classic RAG indexing: split document into chunks and index.
     
     Args:
         file_path: Path to the PDF file
         workspace_dir: Working directory for this file
+        collection_name: Qdrant collection name
+        meilisearch_index_name: MeiliSearch index name
         custom_metadata: Optional business metadata
         on_progress: Optional progress callback function(progress: int)
+        vector_store_grpc_port: Qdrant gRPC port
     
     Returns:
         Processing result with unit_count and other stats
     """
-    # DEBUG: Print function call info
-    console.print(f"\n[yellow]DEBUG: process_document called with:[/yellow]")
-    console.print(f"  file_path: {file_path} (type: {type(file_path).__name__})")
-    console.print(f"  workspace_dir: {workspace_dir} (type: {type(workspace_dir).__name__})")
-    console.print(f"  collection_name: {collection_name} (type: {type(collection_name).__name__})")
-    console.print(f"  meilisearch_index_name: {meilisearch_index_name} (type: {type(meilisearch_index_name).__name__})")
-    console.print(f"  custom_metadata: {custom_metadata}")
-    console.print(f"  on_progress: {on_progress}")
-    console.print(f"  vector_store_grpc_port: {vector_store_grpc_port}")
-    
-    console.print(f"\n[bold cyan]🚀 Processing Document[/bold cyan]")
+    console.print(f"\n[bold cyan]🚀 Classic RAG Indexing[/bold cyan]")
     console.print(f"   File: {file_path}")
     console.print(f"   Workspace: {workspace_dir}\n")
     
     start_time = time.time()
     
-    # Helper function to report progress (支持 async 回调)
+    # Helper function to report progress
     async def report_progress(progress: int):
         if on_progress:
             try:
-                # 检查是否是 async 函数
                 import inspect
                 if inspect.iscoroutinefunction(on_progress):
                     await on_progress(progress)
@@ -166,10 +64,14 @@ async def process_document(
     
     # Step 1: Prepare manifest (10-15%)
     await report_progress(10)
+    
+    # Inject mode into custom_metadata
+    metadata_with_mode = {**(custom_metadata or {}), "mode": ProcessingMode.CLASSIC}
+    
     manifest = await prepare_single_file_manifest(
         file_path=file_path,
         workspace_dir=workspace_dir,
-        custom_metadata=custom_metadata
+        custom_metadata=metadata_with_mode
     )
     await report_progress(15)
     
@@ -206,7 +108,7 @@ async def process_document(
         
         try:
             # Create processor
-            processor = MortgageDocumentProcessor(output_root=output_dir)
+            processor = ClassicDocumentProcessor(output_root=output_dir)
             
             # Step 2.1: Read document (0-10% of part range)
             await report_progress(part_progress_start)
@@ -267,7 +169,6 @@ async def process_document(
                 qdrant_port=VECTOR_STORE_PORT,
                 qdrant_grpc_port=vector_store_grpc_port,
                 collection_name=collection_name,
-                clear_existing=False,  # Accumulate, don't clear
                 api_key=OPENAI_API_KEY
             )
             console.print(f"  ✅ Vector index built")
@@ -277,8 +178,7 @@ async def process_document(
             console.print(f"[dim]  Step 7: Building fulltext index...[/dim]")
             await processor.build_fulltext_index(
                 meilisearch_url=MEILISEARCH_HOST,
-                index_name=meilisearch_index_name,
-                clear_existing=False  # Accumulate, don't clear
+                index_name=meilisearch_index_name
             )
             console.print(f"  ✅ Fulltext index built")
             await report_progress(part_progress_end)
@@ -309,7 +209,7 @@ async def process_document(
     if error_count > 0:
         raise Exception(f"Processing failed: {error_count}/{len(parts)} parts failed")
     
-    # Report completion - will be set to 100 by caller
+    # Report completion
     await report_progress(98)
     
     return {
