@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
+from rich import print as rptint
 
 # Load environment variables
 load_dotenv()
@@ -158,22 +159,8 @@ def test_tree_mcts(dataset_id: str, query: str, unit_id: str, preset: str = "bal
             console.print(f"  Node ID: {node.get('node_id', 'N/A')}")
             console.print(f"  Title: {node.get('title', 'N/A')}")
             
-            # Print full content
-            content = node.get('content', '')
-            if content:
-                console.print(f"\n  Content:")
-                console.print(Panel(content, border_style="blue", expand=False))
+            rptint(node)
             
-            # Print summary if exists
-            summary = node.get('summary', '')
-            if summary:
-                console.print(f"\n  Summary:")
-                console.print(Panel(summary, border_style="green", expand=False))
-            
-            # Print children info
-            children = node.get('children', [])
-            if children:
-                console.print(f"\n  Children: {len(children)} nodes")
     else:
         console.print(f"[red]✗ Failed: {response.json()}[/red]")
 

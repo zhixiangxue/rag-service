@@ -81,6 +81,7 @@ class RagWorker:
         dataset_id = task["dataset_id"]
         doc_id = task["doc_id"]
         mode = task.get("mode", "classic")  # Default to classic if not specified
+        custom_metadata = task.get("metadata")  # Document metadata from upload
         
         console.print("\n" + "=" * 80)
         console.print(f"[bold cyan]Processing Task {task_id}[/bold cyan]")
@@ -138,7 +139,7 @@ class RagWorker:
                 result = await index_lod(
                     file_path=file_path,
                     collection_name=collection_name,
-                    custom_metadata=None,
+                    custom_metadata=custom_metadata,
                     on_progress=update_progress,
                     vector_store_grpc_port=config.VECTOR_STORE_GRPC_PORT
                 )
@@ -148,7 +149,7 @@ class RagWorker:
                     workspace_dir=workspace_dir,
                     collection_name=collection_name,  # Use dataset's collection_name
                     meilisearch_index_name=collection_name,  # Use same name for index
-                    custom_metadata=None,
+                    custom_metadata=custom_metadata,
                     on_progress=update_progress,  # 传递 async 回调
                     vector_store_grpc_port=config.VECTOR_STORE_GRPC_PORT
                 )

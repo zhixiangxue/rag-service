@@ -25,7 +25,12 @@ def _get_cache_invalidator():
 
 @router.post("", response_model=ApiResponse[DatasetResponse])
 def create_dataset(dataset: DatasetCreate):
-    """Create a new dataset and corresponding vector store collection."""
+    """Create a new dataset and corresponding vector store collection.
+    
+    Safe creation logic:
+    1. If dataset exists in DB: verify vector collection exists, create if missing
+    2. If dataset not in DB: write to DB, then verify/create vector collection
+    """
     from zag.storages.vector import QdrantVectorStore
     from zag.embedders import Embedder
     from .. import config
@@ -38,22 +43,24 @@ def create_dataset(dataset: DatasetCreate):
     existing_row = cursor.fetchone()
     
     if existing_row:
-        # Return existing dataset
+        # Dataset exists in DB - ensure vector collection exists
         conn.close()
-        config = json.loads(existing_row["config"]) if existing_row["config"] else None
+        _ensure_vector_collection(dataset.name, dataset.engine)
+        
+        config_data = json.loads(existing_row["config"]) if existing_row["config"] else None
         data = DatasetResponse(
             dataset_id=str(existing_row["id"]),
             collection_name=existing_row["name"],
             name=existing_row["name"],
             description=existing_row["description"],
             engine=existing_row["engine"],
-            config=config,
+            config=config_data,
             created_at=existing_row["created_at"],
             updated_at=existing_row["updated_at"]
         )
         return ApiResponse(success=True, code=200, message="Dataset already exists", data=data)
     
-    # Create new dataset
+    # Create new dataset in DB
     timestamp = now()
     config_json = json.dumps(dataset.config) if dataset.config else None
     dataset_id = generate_id()
@@ -73,21 +80,9 @@ def create_dataset(dataset: DatasetCreate):
     
     conn.close()
     
-    # Create vector store collection
+    # Ensure vector collection exists (create if not exists)
     try:
-        embedder = Embedder(
-            config.EMBEDDING_URI,
-            api_key=config.OPENAI_API_KEY
-        )
-        vector_store = QdrantVectorStore.server(
-            host=config.VECTOR_STORE_HOST,
-            port=config.VECTOR_STORE_PORT,
-            grpc_port=config.VECTOR_STORE_GRPC_PORT,
-            prefer_grpc=True,
-            collection_name=dataset.name,
-            embedder=embedder
-        )
-        # Collection is auto-created in __init__ via _ensure_collection
+        _ensure_vector_collection(dataset.name, dataset.engine)
     except Exception as e:
         # Rollback database if vector store creation fails
         conn = get_connection()
@@ -109,6 +104,39 @@ def create_dataset(dataset: DatasetCreate):
     )
     
     return ApiResponse(success=True, code=200, message="Dataset created successfully", data=data)
+
+
+def _ensure_vector_collection(collection_name: str, engine: str):
+    """Ensure vector collection exists, create if not exists.
+    
+    Args:
+        collection_name: Collection name
+        engine: Vector store engine (qdrant, etc.)
+        
+    Raises:
+        HTTPException: If engine not supported or creation fails
+    """
+    from zag.storages.vector import QdrantVectorStore
+    from zag.embedders import Embedder
+    from .. import config
+    
+    if engine != "qdrant":
+        raise HTTPException(status_code=501, detail=f"Engine '{engine}' not supported")
+    
+    embedder = Embedder(
+        config.EMBEDDING_URI,
+        api_key=config.OPENAI_API_KEY
+    )
+    
+    # QdrantVectorStore.server will create collection if not exists via _ensure_collection
+    QdrantVectorStore.server(
+        host=config.VECTOR_STORE_HOST,
+        port=config.VECTOR_STORE_PORT,
+        grpc_port=config.VECTOR_STORE_GRPC_PORT,
+        prefer_grpc=True,
+        collection_name=collection_name,
+        embedder=embedder
+    )
 
 
 @router.get("", response_model=ApiResponse[List[DatasetResponse]])

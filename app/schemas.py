@@ -86,6 +86,7 @@ class TaskResponse(BaseModel):
     mode: str = "classic"
     status: str  # PENDING, PROCESSING, COMPLETED, FAILED
     progress: int  # 0-100
+    metadata: Optional[Dict[str, Any]] = None  # Document metadata from upload
     error_message: Optional[Dict[str, Any]] = None
     created_at: str
     updated_at: str
@@ -101,13 +102,60 @@ class TaskStatusUpdate(BaseModel):
 # ============ Unit ============
 
 class UnitResponse(BaseModel):
+    """Unit response model (lightweight) - excludes large fields like views."""
     unit_id: str
-    doc_id: str
-    dataset_id: str
-    content: str
+    unit_type: str = "text"
+    content: Any
     metadata: Dict[str, Any]
+    doc_id: Optional[str] = None
     prev_unit_id: Optional[str] = None
     next_unit_id: Optional[str] = None
+    relations: Dict[str, List[str]] = Field(default_factory=dict)
+    has_views: bool = False  # Indicates if raw endpoint has multi-resolution views
+    score: Optional[float] = None  # Relevance score from query results
+
+    @classmethod
+    def from_unit(cls, unit: "BaseUnit") -> "UnitResponse":
+        """Create lightweight UnitResponse from zag BaseUnit."""
+        return cls(
+            unit_id=unit.unit_id,
+            unit_type=str(unit.unit_type) if unit.unit_type else "text",
+            content=unit.content,
+            metadata=unit.metadata.model_dump() if unit.metadata else {},
+            doc_id=unit.doc_id,
+            prev_unit_id=unit.prev_unit_id,
+            next_unit_id=unit.next_unit_id,
+            relations=unit.relations if unit.relations else {},
+            has_views=bool(unit.views) if hasattr(unit, 'views') else False
+        )
+
+
+class UnitRawResponse(BaseModel):
+    """Unit raw response model (full) - includes all fields including views/content."""
+    unit_id: str
+    unit_type: str = "text"
+    content: Any
+    metadata: Dict[str, Any]
+    doc_id: Optional[str] = None
+    prev_unit_id: Optional[str] = None
+    next_unit_id: Optional[str] = None
+    relations: Dict[str, List[str]] = Field(default_factory=dict)
+    views: Optional[List[Dict[str, Any]]] = None
+    
+    @classmethod
+    def from_unit(cls, unit: "BaseUnit") -> "UnitRawResponse":
+        """Create full UnitRawResponse from zag BaseUnit."""
+        return cls(
+            unit_id=unit.unit_id,
+            unit_type=str(unit.unit_type) if unit.unit_type else "text",
+            content=unit.content,
+            metadata=unit.metadata.model_dump() if unit.metadata else {},
+            doc_id=unit.doc_id,
+            prev_unit_id=unit.prev_unit_id,
+            next_unit_id=unit.next_unit_id,
+            relations=unit.relations if unit.relations else {},
+            views=[v.model_dump() for v in unit.views] if unit.views else None
+        )
 
 
 class UnitUpdate(BaseModel):
@@ -125,20 +173,10 @@ class QueryRequest(BaseModel):
     query: str
     top_k: int = Field(default=5, ge=1, le=100)
     filters: Optional[Dict[str, Any]] = None
-    with_document_info: bool = False
-
-
-class UnitResult(BaseModel):
-    unit_id: str
-    doc_id: str
-    score: float
-    content: str
-    metadata: Dict[str, Any]
-    document_info: Optional[Dict[str, str]] = None
 
 
 class QueryResponse(BaseModel):
-    results: List[UnitResult]
+    results: List[dict]
 
 
 # ============ Tree Query ============
@@ -151,6 +189,8 @@ class TreeQueryRequest(BaseModel):
     max_depth: int = Field(default=5, ge=1, le=10)
     # MCTSRetriever params
     preset: str = Field(default="balanced", pattern="^(fast|balanced|accurate|explore)$")
+    # SkeletonRetriever params: retrieval mode (fast=summary, accurate=fulltext)
+    mode: str = Field(default="fast", pattern="^(fast|accurate)$")
 
 
 # ============ Health ============

@@ -77,19 +77,28 @@ async def upload_file(
     file_size = len(file_content)
     file_type = file.filename.split(".")[-1] if "." in file.filename else "unknown"
     
-    # Parse metadata
-    metadata_dict = json.loads(metadata) if metadata else None
+    # Parse and validate metadata
+    if metadata:
+        try:
+            metadata_dict = json.loads(metadata)
+            if not isinstance(metadata_dict, dict):
+                raise HTTPException(status_code=400, detail="Metadata must be a JSON object")
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Metadata must be valid JSON")
+    else:
+        metadata_dict = {}
+    metadata_json = json.dumps(metadata_dict)
     
     timestamp = now()
     doc_id = generate_id()
     
-    # Create Document record with file_hash
+    # Create Document record with file_hash and metadata
     cursor.execute(
         """
-        INSERT INTO documents (id, dataset_id, file_name, file_path, workspace_dir, file_size, file_type, file_hash, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO documents (id, dataset_id, file_name, file_path, workspace_dir, file_size, file_type, file_hash, metadata, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (doc_id, dataset_id, file.filename, file_path, workspace_dir, file_size, file_type, file_hash, DocumentStatus.PROCESSING, timestamp, timestamp)
+        (doc_id, dataset_id, file.filename, file_path, workspace_dir, file_size, file_type, file_hash, metadata_json, DocumentStatus.PROCESSING, timestamp, timestamp)
     )
     conn.commit()
     conn.close()
@@ -266,14 +275,14 @@ def delete_document(dataset_id: str, doc_id: str):
         conn.close()
         raise HTTPException(status_code=404, detail="Document not found")
     
-    # Get dataset collection_name
-    cursor.execute("SELECT collection_name FROM datasets WHERE id = ?", (dataset_id,))
+    # Get dataset name as collection_name
+    cursor.execute("SELECT name FROM datasets WHERE id = ?", (dataset_id,))
     dataset = cursor.fetchone()
     if not dataset:
         conn.close()
         raise HTTPException(status_code=404, detail="Dataset not found")
     
-    collection_name = dataset["collection_name"]
+    collection_name = dataset["name"]
     
     # Delete from database
     cursor.execute("DELETE FROM tasks WHERE doc_id = ?", (doc_id,))

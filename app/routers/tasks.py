@@ -100,8 +100,16 @@ def get_pending_tasks(limit: int = 10):
     conn = get_connection()
     cursor = conn.cursor()
     
+    # JOIN with documents to get metadata
     cursor.execute(
-        "SELECT * FROM tasks WHERE status = ? ORDER BY created_at ASC LIMIT ?",
+        """
+        SELECT t.*, d.metadata as doc_metadata 
+        FROM tasks t
+        JOIN documents d ON t.doc_id = d.id
+        WHERE t.status = ? 
+        ORDER BY t.created_at ASC 
+        LIMIT ?
+        """,
         (TaskStatus.PENDING, limit)
     )
     rows = cursor.fetchall()
@@ -110,6 +118,7 @@ def get_pending_tasks(limit: int = 10):
     results = []
     for row in rows:
         error_message = json.loads(row["error_message"]) if row["error_message"] else None
+        metadata = json.loads(row["doc_metadata"]) if row["doc_metadata"] else None
         results.append(TaskResponse(
             task_id=str(row["id"]),
             dataset_id=str(row["dataset_id"]),
@@ -117,6 +126,7 @@ def get_pending_tasks(limit: int = 10):
             mode=row["mode"] if "mode" in row.keys() else "classic",
             status=row["status"],
             progress=row["progress"],
+            metadata=metadata,
             error_message=error_message,
             created_at=row["created_at"],
             updated_at=row["updated_at"]

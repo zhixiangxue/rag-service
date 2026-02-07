@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional
 
 from zag.readers import MinerUReader, MarkdownTreeReader
 from zag.extractors import CompressionExtractor
+from zag.postprocessors.correctors import HeadingCorrector
 from zag.schemas import BaseUnit, ContentView, LODLevel, TextUnit, UnitMetadata, UnitType
 from zag.embedders import Embedder
 from zag.storages.vector import QdrantVectorStore
@@ -131,6 +132,17 @@ async def index_lod(
     
     reader = MinerUReader(backend="pipeline")
     doc = reader.read(str(file_path))
+
+    # Apply heading correction
+    console.print("  🔧 Correcting headings...")
+    corrector = HeadingCorrector(
+        llm_uri=f"{LLM_PROVIDER}/{LLM_MODEL}",
+        api_key=LLM_API_KEY,
+        llm_correction=True
+    )
+    doc = await corrector.acorrect_document(doc)
+    console.print("  ✅ Headings corrected")
+
     lod_full = doc.content
     
     extractor = CompressionExtractor(f"{LLM_PROVIDER}/{LLM_MODEL}", api_key=LLM_API_KEY)
@@ -249,7 +261,7 @@ async def index_lod(
     
     # Clear existing data for this document before indexing
     console.print(f"  🗑️  Clearing old LOD data for doc_id: {doc_id}")
-    await vector_store.adelete_by_filters({
+    await vector_store.aremove({
         "doc_id": doc_id,
         "metadata.custom.mode": ProcessingMode.LOD
     })

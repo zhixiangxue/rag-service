@@ -53,6 +53,7 @@ def init_db():
             file_size INTEGER NOT NULL,
             file_type TEXT NOT NULL,
             file_hash TEXT,
+            metadata TEXT,
             status TEXT NOT NULL,
             task_id TEXT,
             unit_count INTEGER DEFAULT 0,

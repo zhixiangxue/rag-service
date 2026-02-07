@@ -36,6 +36,7 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
 from zag.splitters import MarkdownHeaderSplitter, TextSplitter, TableSplitter, RecursiveMergingSplitter
 from zag.extractors import KeywordExtractor, TableEnricher, TableSummarizer
+from zag.postprocessors.correctors import HeadingCorrector
 from zag.parsers import TableParser
 from zag.embedders import Embedder
 from zag.storages.vector import QdrantVectorStore
@@ -46,6 +47,7 @@ from zag.schemas.unit import TextUnit, TableUnit
 from zag.utils.hash import calculate_file_hash
 
 from ..constants import ProcessingMode
+from ..config import LLM_PROVIDER, LLM_MODEL, LLM_API_KEY
 
 console = Console()
 
@@ -209,6 +211,16 @@ class ClassicDocumentProcessor:
 
         reader = DoclingReader(pdf_pipeline_options=pdf_options)
         doc = reader.read(str(self.pdf_path))
+
+        # Apply heading correction
+        console.print("  🔧 Correcting headings...")
+        corrector = HeadingCorrector(
+            llm_uri=f"{LLM_PROVIDER}/{LLM_MODEL}",
+            api_key=LLM_API_KEY,
+            llm_correction=True
+        )
+        doc = await corrector.acorrect_document(doc)
+        console.print("  ✅ Headings corrected")
 
         console.print(f"  ✅ Parsed {len(doc.content):,} characters")
         console.print(f"  ✅ Pages: {len(doc.pages)}")
@@ -656,7 +668,7 @@ class ClassicDocumentProcessor:
         # Clear existing data for this document before indexing
         if self.document and self.document.doc_id:
             console.print(f"  🗑️  Clearing old classic data for doc_id: {self.document.doc_id}")
-            await vector_store.adelete_by_filters({
+            await vector_store.aremove({
                 "doc_id": self.document.doc_id,
                 "metadata.custom.mode": ProcessingMode.CLASSIC
             })

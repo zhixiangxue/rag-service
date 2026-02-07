@@ -5,7 +5,7 @@ from cachetools import cached, TTLCache
 from cachetools.keys import hashkey
 import threading
 
-from ..schemas import QueryRequest, UnitResult, ApiResponse, TreeQueryRequest
+from ..schemas import QueryRequest, UnitResponse, ApiResponse, TreeQueryRequest
 from ..database import get_connection
 from .. import config
 from zag.embedders import Embedder
@@ -61,7 +61,7 @@ def clear_dataset_cache(dataset_id: str):
         _dataset_cache.pop(cache_key, None)
 
 
-async def _perform_vector_query(dataset_id: str, request: QueryRequest) -> ApiResponse[List[UnitResult]]:
+async def _perform_vector_query(dataset_id: str, request: QueryRequest) -> ApiResponse[List[UnitResponse]]:
     """Internal function to perform vector search.
     
     Args:
@@ -103,13 +103,13 @@ async def _perform_vector_query(dataset_id: str, request: QueryRequest) -> ApiRe
         for result in results:
             # Extract metadata - handle both dict and UnitMetadata object
             metadata = result.metadata if isinstance(result.metadata, dict) else result.metadata.__dict__
-            unit_results.append(UnitResult(
+            unit_results.append(UnitResponse(
                 unit_id=result.unit_id,
-                doc_id=metadata.get("doc_id", ""),
-                score=result.score,
+                unit_type=metadata.get("unit_type", "text"),
                 content=result.content,
                 metadata=metadata,
-                document_info=None
+                doc_id=metadata.get("doc_id"),
+                score=result.score
             ))
         
         return ApiResponse(
@@ -122,7 +122,7 @@ async def _perform_vector_query(dataset_id: str, request: QueryRequest) -> ApiRe
         raise HTTPException(status_code=500, detail=f"Vector search failed: {str(e)}")
 
 
-@router.post("/{dataset_id}/query", response_model=ApiResponse[List[UnitResult]])
+@router.post("/{dataset_id}/query", response_model=ApiResponse[List[UnitResponse]])
 async def query(dataset_id: str, request: QueryRequest):
     """Query for relevant units (default: vector search).
     
@@ -139,7 +139,7 @@ async def query(dataset_id: str, request: QueryRequest):
     return await _perform_vector_query(dataset_id, request)
 
 
-@router.post("/{dataset_id}/query/vector", response_model=ApiResponse[List[UnitResult]])
+@router.post("/{dataset_id}/query/vector", response_model=ApiResponse[List[UnitResponse]])
 async def query_vector(dataset_id: str, request: QueryRequest):
     """Vector search for relevant units.
     
@@ -153,7 +153,7 @@ async def query_vector(dataset_id: str, request: QueryRequest):
     return await _perform_vector_query(dataset_id, request)
 
 
-@router.post("/{dataset_id}/query/fulltext", response_model=ApiResponse[List[UnitResult]])
+@router.post("/{dataset_id}/query/fulltext", response_model=ApiResponse[List[UnitResponse]])
 async def query_fulltext(dataset_id: str, request: QueryRequest):
     """Full-text search for relevant units.
     
@@ -171,7 +171,7 @@ async def query_fulltext(dataset_id: str, request: QueryRequest):
     raise HTTPException(status_code=501, detail="Fulltext search not implemented yet")
 
 
-@router.post("/{dataset_id}/query/fusion", response_model=ApiResponse[List[UnitResult]])
+@router.post("/{dataset_id}/query/fusion", response_model=ApiResponse[List[UnitResponse]])
 async def query_fusion(dataset_id: str, request: QueryRequest):
     """Fusion search combining vector and fulltext search.
     
@@ -285,6 +285,69 @@ async def query_tree_mcts(dataset_id: str, request: TreeQueryRequest):
         
         # Retrieve (internally fetches unit and parses tree)
         result = await retriever.retrieve(request.query, request.unit_id)
+        
+        # Build response
+        return ApiResponse(
+            success=True,
+            code=200,
+            data={
+                "nodes": [node.model_dump() for node in result.nodes],
+                "path": result.path,
+                "unit_id": request.unit_id
+            }
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Tree query failed: {str(e)}")
+
+
+@router.post("/{dataset_id}/query/tree/skeleton", response_model=ApiResponse[Dict[str, Any]])
+async def query_tree_skeleton(dataset_id: str, request: TreeQueryRequest):
+    """Tree query using SkeletonRetriever.
+    
+    Args:
+        dataset_id: Dataset ID
+        request: Tree query request with query, unit_id
+    
+    Returns:
+        Tree retrieval result with nodes and path
+    """
+    try:
+        # Get dataset info
+        collection_name, engine = get_dataset_info(dataset_id)
+        
+        # Initialize embedder
+        embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
+        
+        # Initialize vector store
+        vector_store = QdrantVectorStore.server(
+            host=config.VECTOR_STORE_HOST,
+            port=config.VECTOR_STORE_PORT,
+            prefer_grpc=False,
+            collection_name=collection_name,
+            embedder=embedder,
+            timeout=60
+        )
+        
+        # Initialize SkeletonRetriever
+        from zag.retrievers.tree import SkeletonRetriever
+        retriever = SkeletonRetriever(
+            llm_uri=config.LLM_URI_TREE_RETRIEVAL,
+            api_key=config.OPENAI_API_KEY,
+            verbose=False,
+            vector_store=vector_store
+        )
+
+        # Retrieve (internally fetches unit and parses tree)
+        # mode: "fast" -> use summary, "accurate" -> use full text
+        use_full_text = request.mode == "accurate"
+        result = await retriever.retrieve(
+            request.query,
+            request.unit_id,
+            use_full_text=use_full_text
+        )
         
         # Build response
         return ApiResponse(
