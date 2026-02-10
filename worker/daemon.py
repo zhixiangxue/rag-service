@@ -14,8 +14,9 @@ from datetime import datetime
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from tenacity import retry, stop_after_attempt, wait_exponential
 
-from .constants import TaskStatus
+from .constants import TaskStatus, ProcessingMode
 from . import config
 from .indexers.classic import index_classic
 from .indexers.lod import index_lod
@@ -42,6 +43,11 @@ class RagWorker:
             data = response.json()
             return data["data"]
     
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=2),
+        reraise=True
+    )
     async def update_task_status(
         self,
         task_id: str,
@@ -49,8 +55,12 @@ class RagWorker:
         progress: Optional[int] = None,
         error_message: Optional[Dict[str, Any]] = None,
         unit_count: Optional[int] = None
-    ):
-        """Update task status via API."""
+    ) -> bool:
+        """Update task status via API with retry.
+        
+        Returns:
+            True if update succeeded, False otherwise
+        """
         payload = {"status": status}
         if progress is not None:
             payload["progress"] = progress
@@ -59,12 +69,17 @@ class RagWorker:
         if unit_count is not None:
             payload["unit_count"] = unit_count
         
-        async with httpx.AsyncClient() as client:
-            response = await client.patch(
-                f"{self.api_base_url}/tasks/{task_id}",  # 修改：去掉 /status
-                json=payload
-            )
-            response.raise_for_status()
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.patch(
+                    f"{self.api_base_url}/tasks/{task_id}",
+                    json=payload
+                )
+                response.raise_for_status()
+                return True
+        except Exception as e:
+            console.print(f"[red]Failed to update task status: {e}[/red]")
+            return False
     
     async def get_document_info(self, dataset_id: str, doc_id: str) -> Dict[str, Any]:
         """Get document information from API."""
@@ -87,8 +102,15 @@ class RagWorker:
         console.print(f"[bold cyan]Processing Task {task_id}[/bold cyan]")
         
         try:
-            # Update to PROCESSING
-            await self.update_task_status(task_id, TaskStatus.PROCESSING, progress=0)
+            # Update to PROCESSING (claim task)
+            console.print("[dim]Claiming task...[/dim]")
+            claimed = await self.update_task_status(task_id, TaskStatus.PROCESSING, progress=0)
+            
+            if not claimed:
+                console.print(f"[yellow]Failed to claim task {task_id}, skipping...[/yellow]")
+                return
+            
+            console.print("[green]Task claimed successfully[/green]")
             
             # Get document info (file path, workspace dir)
             doc_info = await self.get_document_info(dataset_id, doc_id)
@@ -135,7 +157,7 @@ class RagWorker:
                     console.print(f"[yellow]Progress update failed: {e}[/yellow]")
             
             # Route to different indexer based on mode
-            if mode == "lod":
+            if mode == ProcessingMode.LOD:
                 result = await index_lod(
                     file_path=file_path,
                     collection_name=collection_name,
@@ -155,6 +177,7 @@ class RagWorker:
                 )
             
             # Complete task with actual unit count
+            console.print("[dim]Updating task status to COMPLETED...[/dim]")
             await self.update_task_status(
                 task_id,
                 TaskStatus.COMPLETED,

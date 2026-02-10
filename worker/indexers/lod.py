@@ -4,6 +4,7 @@ import uuid
 from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
 from typing import Dict, Any, Optional
 
 from zag.readers import MinerUReader, MarkdownTreeReader
@@ -21,6 +22,9 @@ from ..config import (
 )
 
 console = Console()
+
+# Maximum pages allowed for LOD processing
+MAX_LOD_PAGES = 200
 
 
 # Prompts for LOD extraction
@@ -125,8 +129,35 @@ async def index_lod(
     if not file_path.exists():
         raise FileNotFoundError(f"PDF file not found: {file_path}")
     
-    # Step 1: Read PDF with MinerU
-    console.print("[yellow]Step 1: Reading PDF with MinerU...[/yellow]")
+    # Step 1: Check page count first (lightweight check before heavy processing)
+    console.print("[yellow]Step 1: Checking document size...[/yellow]")
+    
+    from pypdf import PdfReader
+    pdf_reader = PdfReader(str(file_path))
+    page_count = len(pdf_reader.pages)
+    
+    if page_count > MAX_LOD_PAGES:
+        # Display prominent warning
+        warning_table = Table(show_header=False, box=None, padding=(1, 2))
+        warning_table.add_column(style="bold red")
+        warning_table.add_row(f"⚠️  DOCUMENT TOO LARGE ⚠️")
+        warning_table.add_row(f"")
+        warning_table.add_row(f"Page count: {page_count} pages")
+        warning_table.add_row(f"Max allowed: {MAX_LOD_PAGES} pages")
+        warning_table.add_row(f"")
+        warning_table.add_row(f"LOD mode is not suitable for large documents.")
+        warning_table.add_row(f"Please use CLASSIC mode or split the document.")
+        
+        console.print("")
+        console.print(Panel(warning_table, title="[bold red]PROCESSING REJECTED[/bold red]", border_style="red"))
+        console.print("")
+        
+        raise ValueError(f"Document has {page_count} pages, exceeds LOD limit of {MAX_LOD_PAGES} pages. Use CLASSIC mode.")
+    
+    console.print(f"  Pages: {page_count} (✓ within limit)")
+    
+    # Step 2: Read PDF with MinerU
+    console.print("[yellow]Step 2: Reading PDF with MinerU...[/yellow]")
     if on_progress:
         await on_progress(10)
     
@@ -151,10 +182,9 @@ async def index_lod(
     console.print(f"[green]✓ PDF read successfully[/green]")
     console.print(f"  Content: {len(lod_full):,} chars")
     console.print(f"  Tokens: {original_tokens:,}")
-    console.print(f"  Pages: {len(doc.pages)}")
     
-    # Step 2: Extract Quick-Check layer (lod_low)
-    console.print("\n[yellow]Step 2: Extracting Quick-Check layer (LOW)...[/yellow]")
+    # Step 3: Extract Quick-Check layer (lod_low)
+    console.print("\n[yellow]Step 3: Extracting Quick-Check layer (LOW)...[/yellow]")
     if on_progress:
         await on_progress(30)
     
@@ -170,8 +200,8 @@ async def index_lod(
     console.print(f"[green]✓ Quick-Check extracted[/green]")
     console.print(f"  Tokens: {lod_low_tokens:,} ({lod_low_tokens/original_tokens:.1%})")
     
-    # Step 3: Extract Shortlist layer (lod_medium)
-    console.print("\n[yellow]Step 3: Extracting Shortlist layer (MEDIUM)...[/yellow]")
+    # Step 4: Extract Shortlist layer (lod_medium)
+    console.print("\n[yellow]Step 4: Extracting Shortlist layer (MEDIUM)...[/yellow]")
     if on_progress:
         await on_progress(50)
     
@@ -187,8 +217,8 @@ async def index_lod(
     console.print(f"[green]✓ Shortlist extracted[/green]")
     console.print(f"  Tokens: {lod_medium_tokens:,} ({lod_medium_tokens/original_tokens:.1%})")
     
-    # Step 4: Generate DocTree (lod_high)
-    console.print("\n[yellow]Step 4: Building DocTree structure (HIGH)...[/yellow]")
+    # Step 5: Generate DocTree (lod_high)
+    console.print("\n[yellow]Step 5: Building DocTree structure (HIGH)...[/yellow]")
     if on_progress:
         await on_progress(70)
     
@@ -207,8 +237,8 @@ async def index_lod(
         console.print(f"[red]✗ DocTree building failed: {e}[/red]")
         raise
     
-    # Step 5: Create LOD Unit
-    console.print("\n[yellow]Step 5: Creating LOD Unit...[/yellow]")
+    # Step 6: Create LOD Unit
+    console.print("\n[yellow]Step 6: Creating LOD Unit...[/yellow]")
     if on_progress:
         await on_progress(85)
     
@@ -242,8 +272,8 @@ async def index_lod(
     console.print(f"  Unit ID: {lod_unit_id}")
     console.print(f"  Views: {len(lod_unit.views)}")
     
-    # Step 6: Index to vector store
-    console.print("\n[yellow]Step 6: Indexing to vector store...[/yellow]")
+    # Step 7: Index to vector store
+    console.print("\n[yellow]Step 7: Indexing to vector store...[/yellow]")
     if on_progress:
         await on_progress(95)
     

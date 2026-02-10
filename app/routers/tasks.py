@@ -96,11 +96,14 @@ def get_all_tasks(limit: int = 10, status: Optional[str] = None):
 
 @router.get("/tasks/pending", response_model=ApiResponse[List[TaskResponse]])
 def get_pending_tasks(limit: int = 10):
-    """Get pending tasks for worker to process."""
+    """Get pending tasks for worker to process.
+    
+    Note: Worker must call PATCH /tasks/{task_id} to claim task (update status to PROCESSING)
+    to prevent multiple workers from processing the same task.
+    """
     conn = get_connection()
     cursor = conn.cursor()
     
-    # JOIN with documents to get metadata
     cursor.execute(
         """
         SELECT t.*, d.metadata as doc_metadata 
