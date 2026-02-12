@@ -176,6 +176,46 @@ async def create_task(
     )
 
 
+@router.get("/{doc_id}/tasks", response_model=ApiResponse[List[TaskResponse]])
+def list_document_tasks(dataset_id: str, doc_id: str):
+    """Get all tasks for a specific document."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    # Check if document exists
+    cursor.execute(
+        "SELECT * FROM documents WHERE id = ? AND dataset_id = ?",
+        (doc_id, dataset_id)
+    )
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    cursor.execute(
+        "SELECT * FROM tasks WHERE dataset_id = ? AND doc_id = ? ORDER BY created_at DESC",
+        (dataset_id, doc_id)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    
+    results = []
+    for row in rows:
+        error_message = json.loads(row["error_message"]) if row["error_message"] else None
+        results.append(TaskResponse(
+            task_id=str(row["id"]),
+            dataset_id=str(row["dataset_id"]),
+            doc_id=str(row["doc_id"]),
+            mode=row["mode"] if "mode" in row.keys() else "classic",
+            status=row["status"],
+            progress=row["progress"],
+            error_message=error_message,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"]
+        ))
+    
+    return ApiResponse(success=True, code=200, data=results)
+
+
 @router.get("", response_model=ApiResponse[List[DocumentResponse]])
 def list_documents(dataset_id: str, status: Optional[str] = None):
     """List documents in a dataset."""

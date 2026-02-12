@@ -4,7 +4,15 @@ from typing import List
 import json
 
 from ..database import get_connection, now, generate_id
-from ..schemas import DatasetCreate, DatasetUpdate, DatasetResponse, ApiResponse, MessageResponse
+from ..schemas import (
+    DatasetCreate,
+    DatasetUpdate,
+    DatasetResponse,
+    ApiResponse,
+    MessageResponse,
+    TaskResponse
+)
+from ..constants import TaskStatus
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -193,6 +201,43 @@ def get_dataset(dataset_id: str):
     )
     
     return ApiResponse(success=True, code=200, data=data)
+
+
+@router.get("/{dataset_id}/tasks", response_model=ApiResponse[List[TaskResponse]])
+def list_dataset_tasks(dataset_id: str):
+    """Get all tasks for a specific dataset."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    # Check if dataset exists
+    cursor.execute("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    cursor.execute(
+        "SELECT * FROM tasks WHERE dataset_id = ? ORDER BY created_at DESC",
+        (dataset_id,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    
+    results = []
+    for row in rows:
+        error_message = json.loads(row["error_message"]) if row["error_message"] else None
+        results.append(TaskResponse(
+            task_id=str(row["id"]),
+            dataset_id=str(row["dataset_id"]),
+            doc_id=str(row["doc_id"]),
+            mode=row["mode"] if "mode" in row.keys() else "classic",
+            status=row["status"],
+            progress=row["progress"],
+            error_message=error_message,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"]
+        ))
+    
+    return ApiResponse(success=True, code=200, data=results)
 
 
 @router.patch("/{dataset_id}", response_model=ApiResponse[DatasetResponse])
