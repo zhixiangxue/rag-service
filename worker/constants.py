@@ -13,4 +13,5 @@ class ProcessingMode:
     """Document processing mode constants."""
     CLASSIC = "classic"
     LOD = "lod"
+    GRAPH = "graph"
 

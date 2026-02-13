@@ -18,6 +18,12 @@ VECTOR_STORE_HOST = os.getenv("VECTOR_STORE_HOST", "localhost")
 VECTOR_STORE_PORT = int(os.getenv("VECTOR_STORE_PORT", "6333"))
 VECTOR_STORE_GRPC_PORT = int(os.getenv("VECTOR_STORE_GRPC_PORT", "6334"))
 
+# ============================================
+# Graph Database Configuration
+# ============================================
+FALKORDB_HOST = os.getenv("FALKORDB_HOST", "localhost")
+FALKORDB_PORT = int(os.getenv("FALKORDB_PORT", "6379"))
+
 # TODO: Remove these default fallback settings when dataset management is fully implemented
 # Currently used as fallback when dataset_id is not found in database
 DEFAULT_COLLECTION_NAME = os.getenv("DEFAULT_COLLECTION_NAME", "mortgage_guidelines")

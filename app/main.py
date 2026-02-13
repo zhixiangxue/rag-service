@@ -6,7 +6,7 @@ from fastapi.responses import RedirectResponse
 import os
 
 from .database import init_db
-from .routers import datasets, documents, tasks, query, units, health, demo
+from .routers import datasets, documents, tasks, query, units, health, demo, graph
 
 # Initialize database
 init_db()
@@ -35,6 +35,7 @@ app.include_router(tasks.router)
 app.include_router(query.router)
 app.include_router(units.router)
 app.include_router(demo.router)
+app.include_router(graph.router)
 
 
 @app.get("/")

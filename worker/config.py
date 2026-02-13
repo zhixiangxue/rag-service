@@ -80,6 +80,12 @@ VECTOR_STORE_PORT = int(os.getenv("VECTOR_STORE_PORT", "6333"))
 VECTOR_STORE_GRPC_PORT = int(os.getenv("VECTOR_STORE_GRPC_PORT", "6334"))
 
 # ============================================
+# Graph Database Configuration
+# ============================================
+FALKORDB_HOST = os.getenv("FALKORDB_HOST", "localhost")
+FALKORDB_PORT = int(os.getenv("FALKORDB_PORT", "6379"))
+
+# ============================================
 # HuggingFace Configuration
 # ============================================
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
