@@ -1,10 +1,12 @@
 """Document API endpoints."""
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Body
 from typing import List, Optional
 import os
 import json
-import xxhash
+from pathlib import Path
 
+from zag.utils.hash import calculate_file_hash
+from ..utils.s3 import download_file_from_s3
 from ..database import get_connection, now, generate_id
 from ..schemas import (
     DocumentResponse,
@@ -20,6 +22,103 @@ from .. import config
 router = APIRouter(prefix="/datasets/{dataset_id}/documents", tags=["documents"])
 
 
+def _create_document_record(
+    dataset_id: str,
+    file_path: str,
+    filename: str,
+    metadata: Optional[str] = None
+) -> dict:
+    """
+    Create document record after file is saved.
+    Handles dataset validation, hash calculation, duplicate check, and database insert.
+    
+    Args:
+        dataset_id: Dataset ID
+        file_path: Path to saved file
+        filename: Original filename
+        metadata: Optional JSON metadata string
+        
+    Returns:
+        dict with doc_id, file_name, file_path, file_hash, and status info
+        
+    Raises:
+        ValueError: If metadata is invalid
+        HTTPException: If dataset not found (404)
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Check if dataset exists
+        cursor.execute("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        
+        # Calculate file hash using zag's utility on saved file
+        file_hash = calculate_file_hash(file_path)
+        
+        # Check for duplicate: same dataset + same file_hash
+        cursor.execute(
+            "SELECT id, file_name FROM documents WHERE dataset_id = ? AND file_hash = ?",
+            (dataset_id, file_hash)
+        )
+        existing_doc = cursor.fetchone()
+        
+        if existing_doc:
+            # File already uploaded, delete duplicate and return existing doc_id
+            os.remove(file_path)
+            return {
+                "dataset_id": str(dataset_id),
+                "doc_id": str(existing_doc['id']),
+                "file_name": existing_doc['file_name'],
+                "file_hash": file_hash,
+                "is_duplicate": True
+            }
+        
+        # Extract workspace directory (parent of file)
+        workspace_dir = os.path.dirname(file_path)
+        
+        file_size = os.path.getsize(file_path)
+        file_type = filename.split(".")[-1] if "." in filename else "unknown"
+        
+        # Parse and validate metadata
+        if metadata:
+            try:
+                metadata_dict = json.loads(metadata)
+                if not isinstance(metadata_dict, dict):
+                    raise ValueError("Metadata must be a JSON object")
+            except json.JSONDecodeError:
+                raise ValueError("Metadata must be valid JSON")
+        else:
+            metadata_dict = {}
+        metadata_json = json.dumps(metadata_dict)
+        
+        timestamp = now()
+        # Use file_hash as doc_id to ensure same content gets same ID
+        doc_id = file_hash
+        
+        # Create Document record with file_hash and metadata
+        cursor.execute(
+            """
+            INSERT INTO documents (id, dataset_id, file_name, file_path, workspace_dir, file_size, file_type, file_hash, metadata, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (doc_id, dataset_id, filename, file_path, workspace_dir, file_size, file_type, file_hash, metadata_json, DocumentStatus.PROCESSING, timestamp, timestamp)
+        )
+        conn.commit()
+        
+        return {
+            "dataset_id": str(dataset_id),
+            "doc_id": str(doc_id),
+            "file_name": filename,
+            "file_path": file_path,
+            "file_hash": file_hash,
+            "is_duplicate": False
+        }
+    finally:
+        conn.close()
+
+
 @router.post("", response_model=ApiResponse[dict])
 async def upload_file(
     dataset_id: str,
@@ -27,94 +126,63 @@ async def upload_file(
     metadata: Optional[str] = Form(None)
 ):
     """Upload file to dataset."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    
-    # Check if dataset exists
-    cursor.execute("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
-    if not cursor.fetchone():
-        conn.close()
-        raise HTTPException(status_code=404, detail="Dataset not found")
-    
-    # Read file content
-    file_content = await file.read()
-    
-    # Calculate file hash using xxhash
-    file_hash = xxhash.xxh64(file_content).hexdigest()
-    
-    # Check for duplicate: same dataset + same file_hash
-    cursor.execute(
-        "SELECT id, file_name FROM documents WHERE dataset_id = ? AND file_hash = ?",
-        (dataset_id, file_hash)
-    )
-    existing_doc = cursor.fetchone()
-    
-    if existing_doc:
-        # File already uploaded, return existing doc_id
-        conn.close()
-        return ApiResponse(
-            success=True,
-            code=200,
-            message="File already exists, reusing existing document",
-            data={
-                "dataset_id": str(dataset_id),
-                "doc_id": str(existing_doc['id']),
-                "file_name": existing_doc['file_name'],
-                "file_hash": file_hash,
-            }
-        )
-    
     # Save file using storage abstraction
     storage = get_storage()
-    
-    # Reset file pointer for storage.save
-    await file.seek(0)
     file_path = storage.save(file.file, file.filename, dataset_id)
     
-    # Extract workspace directory (parent of file)
-    workspace_dir = os.path.dirname(file_path)
+    # Create document record (handles dataset validation, hash, duplicate check, insert)
+    try:
+        result = _create_document_record(dataset_id, file_path, file.filename, metadata)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     
-    file_size = len(file_content)
-    file_type = file.filename.split(".")[-1] if "." in file.filename else "unknown"
+    message = "File already exists, reusing existing document" if result["is_duplicate"] else "File uploaded successfully"
+    return ApiResponse(success=True, code=200, message=message, data=result)
+
+
+@router.post("/from-s3", response_model=ApiResponse[dict])
+async def upload_from_s3(
+    dataset_id: str,
+    s3_url: str = Body(..., embed=True),
+    metadata: Optional[str] = Body(None, embed=True)
+):
+    """Download file from S3 URL and add to dataset."""
+    # Extract filename from URL
+    filename = Path(s3_url).name
+    if not filename:
+        raise HTTPException(status_code=400, detail="Invalid S3 URL")
     
-    # Parse and validate metadata
-    if metadata:
-        try:
-            metadata_dict = json.loads(metadata)
-            if not isinstance(metadata_dict, dict):
-                raise HTTPException(status_code=400, detail="Metadata must be a JSON object")
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Metadata must be valid JSON")
-    else:
-        metadata_dict = {}
-    metadata_json = json.dumps(metadata_dict)
+    # Download file from S3 to temp location
+    storage = get_storage()
+    temp_dir = storage.base_dir / dataset_id / "temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_file = temp_dir / filename
     
-    timestamp = now()
-    doc_id = generate_id()
+    try:
+        download_file_from_s3(
+            s3_url, 
+            temp_file,
+            aws_access_key_id=config.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=config.AWS_SECRET_KEY
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to download file: {str(e)}")
     
-    # Create Document record with file_hash and metadata
-    cursor.execute(
-        """
-        INSERT INTO documents (id, dataset_id, file_name, file_path, workspace_dir, file_size, file_type, file_hash, metadata, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (doc_id, dataset_id, file.filename, file_path, workspace_dir, file_size, file_type, file_hash, metadata_json, DocumentStatus.PROCESSING, timestamp, timestamp)
-    )
-    conn.commit()
-    conn.close()
+    # Move to final location using storage abstraction
+    with open(temp_file, 'rb') as f:
+        file_path = storage.save(f, filename, dataset_id)
+    temp_file.unlink()
     
-    return ApiResponse(
-        success=True,
-        code=200,
-        message="File uploaded successfully",
-        data={
-            "dataset_id": str(dataset_id),
-            "doc_id": str(doc_id),
-            "file_name": file.filename,
-            "file_path": file_path,
-            "file_hash": file_hash,
-        }
-    )
+    # Create document record (handles dataset validation, hash, duplicate check, insert)
+    try:
+        result = _create_document_record(dataset_id, file_path, filename, metadata)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    message = "File already exists, reusing existing document" if result["is_duplicate"] else "File uploaded successfully"
+    return ApiResponse(success=True, code=200, message=message, data=result)
 
 
 @router.post("/{doc_id}/tasks", response_model=ApiResponse[TaskResponse])
