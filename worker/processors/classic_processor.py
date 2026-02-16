@@ -71,6 +71,9 @@ class ClassicDocumentProcessor:
         self.units: List[Union[TextUnit, TableUnit]] = []
         self.vector_indexer: Optional[VectorIndexer] = None
         self.fulltext_indexer: Optional[FullTextIndexer] = None
+        
+        # Page range being processed (for large file processing)
+        self._current_page_range: Optional[tuple] = None  # (start, end) 1-based inclusive
 
         # Lazy-initialized subdirectories
         self._raw_dir: Optional[Path] = None
@@ -175,7 +178,7 @@ class ClassicDocumentProcessor:
         pdf_path: Path,
         use_gpu: bool = True,
         num_threads: int = 8,
-        source_hash: str = None  # 新增：强制指定源文件 hash
+        page_range: Optional[tuple] = None  # (start, end) 1-based inclusive
     ) -> PDF:
         """
         Read a single PDF document
@@ -184,23 +187,30 @@ class ClassicDocumentProcessor:
             pdf_path: Path to PDF file
             use_gpu: Enable GPU acceleration for Docling
             num_threads: Number of threads for parsing
-            source_hash: Optional source file hash (for split PDFs).
-                        If provided, will override the computed hash from pdf_path.
-                        Use this when processing PDF parts to maintain consistent hash.
+            page_range: Optional page range tuple (start, end) 1-based inclusive.
+                        If provided, only reads the specified page range.
+                        Example: (1, 100) reads pages 1-100.
 
         Returns:
             PDF document object
             
         Note:
-            When processing split PDF parts (e.g., large_file_part1.pdf), pass the
-            original file's hash as source_hash to maintain ID consistency across parts.
+            When processing large files in chunks:
+            1. Each chunk is read separately with page_range
+            2. HeadingCorrection is applied to each chunk
+            3. Chunks are merged using PDF.__add__()
+            4. The merged document maintains consistent doc_id
         """
         self.pdf_path = Path(pdf_path)
         if not self.pdf_path.exists():
             raise FileNotFoundError(f"PDF file not found: {self.pdf_path}")
 
+        # Store page range for later use (e.g., process_tables)
+        self._current_page_range = page_range
+
         # Parse PDF
-        console.print(f"📄 Parsing PDF: {self.pdf_path.name}")
+        range_str = f" (pages {page_range[0]}-{page_range[1]})" if page_range else ""
+        console.print(f"📄 Parsing PDF{range_str}: {self.pdf_path.name}")
 
         # Configure Docling
         pdf_options = PdfPipelineOptions()
@@ -210,7 +220,7 @@ class ClassicDocumentProcessor:
         )
 
         reader = DoclingReader(pdf_pipeline_options=pdf_options)
-        doc = reader.read(str(self.pdf_path))
+        doc = reader.read(str(self.pdf_path), page_range=page_range)
 
         # Apply heading correction
         console.print("  🔧 Correcting headings...")
@@ -230,21 +240,21 @@ class ClassicDocumentProcessor:
             console.print(
                 f"  ✅ Table items: {doc.metadata.custom.get('table_items_count', 0)}")
 
-        # 如果提供了 source_hash，覆盖框架计算的 hash
-        if source_hash:
-            console.print(f"\n🔑 Using provided source_hash: {source_hash}")
-            console.print(f"   (原 hash: {doc.metadata.md5})")
-            
-            # 更新 metadata 中的 md5
-            doc.metadata.md5 = source_hash
-            doc.doc_id = source_hash
-            # 更新 doc_id（如果框架使用 md5 生成 doc_id）
-            # doc_id 通常由框架自动生成，但我们可以通过修改 md5 间接影响它
-            
-            console.print(f"   ✅ Document hash updated to source hash")
-
         self.document = doc
         return doc
+    
+    def set_document(self, document: PDF) -> None:
+        """
+        Set the document directly (for merged documents)
+        
+        Used after merging multiple page range reads into a single document.
+        
+        Args:
+            document: PDF document to set
+        """
+        self.document = document
+        # Use source field for file path (source contains the file path for local files)
+        self.pdf_path = Path(document.metadata.source) if document.metadata.source else None
 
     def set_business_context(
         self,
@@ -504,23 +514,77 @@ class ClassicDocumentProcessor:
         from zag.readers import MinerUReader
         from zag.parsers import TableParser
         from zag.schemas import UnitMetadata
+        from ..config import MAX_PAGES_PER_PART
         
-        console.print(f"  ⏳ Re-reading PDF with MinerUReader...")
-        mineru_reader = MinerUReader()  # Use default hybrid-auto-engine backend
-        pdf_mineru = mineru_reader.read(self.pdf_path)  # Temporary object for table parsing
-        console.print(f"  ✅ Re-read complete (MinerU provides better table structure)")
+        # Get full page range from merged document
+        if self.document and self.document.pages:
+            page_numbers = [p.page_number for p in self.document.pages]
+            total_pages = len(page_numbers)
+            start_page = min(page_numbers)
+            end_page = max(page_numbers)
+        else:
+            # Fallback to current page range
+            if self._current_page_range:
+                start_page, end_page = self._current_page_range
+                total_pages = end_page - start_page + 1
+            else:
+                raise ValueError("No page range information available")
         
-        # Parse tables from MinerU's markdown output
-        parser = TableParser()  # No LLM needed - pure HTML/Markdown parsing
+        # Calculate page ranges for chunked reading (same logic as classic.py)
+        if total_pages > MAX_PAGES_PER_PART:
+            page_ranges = []
+            s = start_page
+            while s <= end_page:
+                e = min(s + MAX_PAGES_PER_PART - 1, end_page)
+                page_ranges.append((s, e))
+                s = e + 1
+            console.print(f"  📄 Large document, reading in {len(page_ranges)} parts")
+        else:
+            page_ranges = [(start_page, end_page)]
+        
+        # Read in parts and collect all tables
+        mineru_reader = MinerUReader()
+        merged_pdf: Optional[PDF] = None
+        
+        for part_idx, (part_start, part_end) in enumerate(page_ranges, 1):
+            console.print(f"  ⏳ Reading part {part_idx}/{len(page_ranges)}: pages {part_start}-{part_end}...")
+            pdf_mineru = mineru_reader.read(self.pdf_path, page_range=(part_start, part_end))
+            
+            # Merge PDFs
+            if merged_pdf is None:
+                merged_pdf = pdf_mineru
+            else:
+                merged_pdf = merged_pdf + pdf_mineru
+        
+        # Dump merged PDF to cache for reuse
+        if merged_pdf:
+            cache_dir = Path.home() / ".zag" / "cache" / "readers" / "mineru"
+            archive_path = merged_pdf.dump(cache_dir)
+            console.print(f"  💾 Cached: {archive_path}")
+        
+        # Parse tables from merged PDF (so span is relative to merged content)
+        console.print(f"  ⏳ Parsing tables from merged content...")
+        parser = TableParser()
         unit_metadata = UnitMetadata(
-            document=pdf_mineru.metadata.model_dump_deep()  # Deep copy for safety
+            document=merged_pdf.metadata.model_dump_deep()
         )
         table_units = parser.parse(
-            text=pdf_mineru.content,  # MinerU's high-quality markdown
+            text=merged_pdf.content,
             metadata=unit_metadata,
-            doc_id=pdf_mineru.doc_id,
+            doc_id=merged_pdf.doc_id,
         )
-        console.print(f"  ✅ Parsed {len(table_units)} tables from MinerU output")
+        console.print(f"  ✅ Total tables parsed: {len(table_units)}")
+        
+        # Infer page numbers for table units
+        if table_units:
+            from zag.utils.page_inference import infer_page_numbers
+            infer_page_numbers(
+                table_units,
+                merged_pdf.pages,
+                full_content=merged_pdf.content
+            )
+            tables_with_pages = sum(1 for t in table_units if t.metadata.page_numbers)
+            console.print(f"  📄 Tables with page_numbers: {tables_with_pages}/{len(table_units)}")
         
         # ========== Stage 3: Enrich TableUnits (LLM-based) ==========
         if table_units:

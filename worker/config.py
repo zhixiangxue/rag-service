@@ -58,7 +58,6 @@ RERANKER_PROVIDER = os.getenv("RERANKER_PROVIDER", "cohere")  # cohere, sentence
 # ============================================
 # PDF Processing
 MAX_PAGES_PER_PART = int(os.getenv("MAX_PAGES_PER_PART", "100"))
-PAGE_OVERLAP = int(os.getenv("PAGE_OVERLAP", "2"))
 
 # Reader Configuration
 DOCUMENT_READER = os.getenv("DOCUMENT_READER", "docling")  # docling, markitdown, mineru

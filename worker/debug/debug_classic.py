@@ -121,9 +121,9 @@ async def debug_process(pdf_path: Path):
         console.print("\n" + "=" * 70)
         console.print(Panel.fit(
             f"[bold green]✓ Classic RAG Indexing Complete[/bold green]\n\n"
-            f"Units created: {result['unit_count']}\n"
-            f"Parts processed: {result['parts_processed']}\n"
-            f"Source hash: {result['source_hash']}\n"
+            f"Units created: {result.get('unit_count', 'N/A')}\n"
+            f"Parts processed: {result.get('parts', 'N/A')}\n"
+            f"Source hash: {result.get('source_hash', 'N/A')}\n"
             f"Time elapsed: {elapsed:.2f}s ({elapsed/60:.1f} min)\n\n"
             f"Workspace: {workspace_dir}",
             border_style="green"

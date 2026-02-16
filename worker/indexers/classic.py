@@ -2,10 +2,9 @@
 import time
 from pathlib import Path
 from rich.console import Console
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 
 from ..processors.classic_processor import ClassicDocumentProcessor
-from ..utils.manifest import prepare_single_file_manifest
 from ..constants import ProcessingMode
 from ..config import (
     LLM_PROVIDER, LLM_MODEL, LLM_API_KEY,
@@ -14,10 +13,32 @@ from ..config import (
     MEILISEARCH_HOST, MEILISEARCH_API_KEY,
     USE_GPU, NUM_THREADS,
     MAX_CHUNK_TOKENS, TABLE_MAX_TOKENS, TARGET_TOKEN_SIZE,
-    NUM_KEYWORDS
+    NUM_KEYWORDS, MAX_PAGES_PER_PART
 )
+from zag.schemas.pdf import PDF
+from zag.utils.hash import calculate_file_hash
 
 console = Console()
+
+
+def calculate_page_ranges(total_pages: int, pages_per_part: int) -> List[Tuple[int, int]]:
+    """
+    Calculate page ranges for large file processing.
+    
+    Args:
+        total_pages: Total number of pages in the PDF
+        pages_per_part: Maximum pages per part
+        
+    Returns:
+        List of (start, end) tuples (1-based, inclusive)
+    """
+    ranges = []
+    start = 1
+    while start <= total_pages:
+        end = min(start + pages_per_part - 1, total_pages)
+        ranges.append((start, end))
+        start = end + 1
+    return ranges
 
 
 async def index_classic(
@@ -31,6 +52,12 @@ async def index_classic(
 ) -> Dict[str, Any]:
     """
     Classic RAG indexing: split document into chunks and index.
+    
+    For large files, uses page-range-based reading instead of physical splitting:
+    1. Read file in page ranges (e.g., 1-100, 101-200, ...)
+    2. Apply HeadingCorrection to each range
+    3. Merge all ranges into a single PDF document
+    4. Process the merged document (split, tables, metadata, indexing)
     
     Args:
         file_path: Path to the PDF file
@@ -62,159 +89,160 @@ async def index_classic(
             except Exception as e:
                 console.print(f"[yellow]⚠ Progress callback error: {e}[/yellow]")
     
-    # Step 1: Prepare manifest (10-15%)
+    # Step 1: Calculate source hash and page count (10-15%)
     await report_progress(10)
+    
+    console.print(f"\n[black on cyan] Step 1/9: Analyzing document [/black on cyan]")
+    
+    source_hash = calculate_file_hash(file_path)
+    console.print(f"   🔑 Source hash: {source_hash}")
+    
+    # Get page count
+    from pypdf import PdfReader
+    try:
+        reader = PdfReader(file_path)
+        total_pages = len(reader.pages)
+        console.print(f"   📖 Total pages: {total_pages}")
+    except Exception as e:
+        raise Exception(f"Failed to read PDF: {e}")
+    
+    # Calculate page ranges
+    if total_pages > MAX_PAGES_PER_PART:
+        page_ranges = calculate_page_ranges(total_pages, MAX_PAGES_PER_PART)
+        console.print(f"   ✂️  Large file, will read in {len(page_ranges)} parts: {page_ranges}")
+    else:
+        page_ranges = [(1, total_pages)]
+        console.print(f"   ✅ Small file, reading all pages at once")
     
     # Inject mode into custom_metadata
     metadata_with_mode = {**(custom_metadata or {}), "mode": ProcessingMode.CLASSIC}
-    
-    manifest = await prepare_single_file_manifest(
-        file_path=file_path,
-        workspace_dir=workspace_dir,
-        custom_metadata=metadata_with_mode
-    )
-    await report_progress(15)
-    
-    task = manifest["tasks"][0]
-    source_hash = task["source_hash"]
-    parts = task["parts"]
-    metadata = task["metadata"]
     
     # Create output directory using source hash
     output_dir = workspace_dir / "output" / source_hash
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    total_units = 0
-    success_count = 0
-    error_count = 0
+    # Create processor
+    processor = ClassicDocumentProcessor(output_root=output_dir)
     
-    # Step 2: Process each part
-    for part_idx, part_info in enumerate(parts, 1):
-        part_file = Path(part_info['file'])
-        page_range = part_info['page_range']
+    # Step 2: Read document in parts and merge (15-25%)
+    console.print(f"\n[black on cyan] Step 2/9: Reading document [/black on cyan]")
+    merged_doc: Optional[PDF] = None
+    
+    for part_idx, (page_start, page_end) in enumerate(page_ranges, 1):
+        part_progress = 15 + int((part_idx - 0.5) / len(page_ranges) * 10)
+        await report_progress(part_progress)
         
-        # Calculate progress range for this part (15% - 95% divided by parts)
-        part_progress_start = 15 + int((part_idx - 1) * 80 / len(parts))
-        part_progress_end = 15 + int(part_idx * 80 / len(parts))
+        console.print(f"\n[cyan]--- Reading part {part_idx}/{len(page_ranges)}: pages {page_start}-{page_end} ---[/cyan]")
         
-        console.print(f"\n[cyan]--- Part {part_idx}/{len(parts)} ---[/cyan]")
-        console.print(f"📄 File: {part_file.name}")
-        console.print(f"📚 Pages: {page_range}")
+        # Read this page range
+        doc = await processor.read_document(
+            pdf_path=file_path,
+            use_gpu=USE_GPU,
+            num_threads=NUM_THREADS,
+            page_range=(page_start, page_end)
+        )
         
-        if not part_file.exists():
-            console.print(f"[red]❌ Part file not found: {part_file}[/red]")
-            error_count += 1
-            continue
-        
-        try:
-            # Create processor
-            processor = ClassicDocumentProcessor(output_root=output_dir)
-            
-            # Step 2.1: Read document (0-10% of part range)
-            await report_progress(part_progress_start)
-            console.print(f"[dim]  Step 1: Reading document...[/dim]")
-            await processor.read_document(
-                pdf_path=part_file,
-                use_gpu=USE_GPU,
-                num_threads=NUM_THREADS,
-                source_hash=source_hash
-            )
-            console.print(f"  ✅ Document loaded: {len(processor.document.content):,} characters")
-            await report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.1))
-            
-            # Step 2.2: Inject custom metadata (10-15% of part range)
-            if metadata:
-                console.print(f"[dim]  Step 2: Injecting metadata...[/dim]")
-                processor.set_business_context(custom_metadata=metadata)
-                console.print(f"  ✅ Metadata injected")
-            await report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.15))
-            
-            # Step 2.3: Split document (15-30% of part range)
-            console.print(f"[dim]  Step 3: Splitting document...[/dim]")
-            await processor.split_document(
-                max_chunk_tokens=MAX_CHUNK_TOKENS,
-                table_max_tokens=TABLE_MAX_TOKENS,
-                target_token_size=TARGET_TOKEN_SIZE,
-                export_visualization=True
-            )
-            part_units = len(processor.units)
-            console.print(f"  ✅ Split into {part_units} units")
-            await report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.3))
-            
-            # Step 2.4: Process tables (30-50% of part range)
-            console.print(f"[dim]  Step 4: Processing tables...[/dim]")
-            llm_uri = f"{LLM_PROVIDER}/{LLM_MODEL}"
-            await processor.process_tables(
-                llm_uri=llm_uri,
-                api_key=LLM_API_KEY,
-            )
-            console.print(f"  ✅ Tables processed")
-            await report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.5))
-            
-            # Step 2.5: Extract metadata (50-70% of part range)
-            console.print(f"[dim]  Step 5: Extracting metadata...[/dim]")
-            await processor.extract_metadata(
-                llm_uri=llm_uri,
-                api_key=LLM_API_KEY,
-                num_keywords=NUM_KEYWORDS,
-            )
-            console.print(f"  ✅ Metadata extracted")
-            await report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.7))
-            
-            # Step 2.6: Build vector index (70-85% of part range)
-            console.print(f"[dim]  Step 6: Building vector index...[/dim]")
-            await processor.build_vector_index(
-                embedding_uri=EMBEDDING_URI,
-                qdrant_host=VECTOR_STORE_HOST,
-                qdrant_port=VECTOR_STORE_PORT,
-                qdrant_grpc_port=vector_store_grpc_port,
-                collection_name=collection_name,
-                api_key=OPENAI_API_KEY
-            )
-            console.print(f"  ✅ Vector index built")
-            await report_progress(part_progress_start + int((part_progress_end - part_progress_start) * 0.85))
-            
-            # Step 2.7: Build fulltext index (85-100% of part range)
-            console.print(f"[dim]  Step 7: Building fulltext index...[/dim]")
-            await processor.build_fulltext_index(
-                meilisearch_url=MEILISEARCH_HOST,
-                index_name=meilisearch_index_name
-            )
-            console.print(f"  ✅ Fulltext index built")
-            await report_progress(part_progress_end)
-            
-            total_units += part_units
-            success_count += 1
-            console.print(f"[green]✓ Part {part_idx} completed ({part_units} units)[/green]")
-            
-        except Exception as e:
-            console.print(f"[red]✗ Part {part_idx} failed: {e}[/red]")
-            import traceback
-            traceback.print_exc()
-            error_count += 1
+        # Merge documents
+        if merged_doc is None:
+            merged_doc = doc
+        else:
+            console.print(f"  🔗 Merging with previous document...")
+            merged_doc = merged_doc + doc
+            console.print(f"  ✅ Merged: {len(merged_doc.pages)} pages total")
+    
+    # Step 3: Set merged document and update doc_id (25%)
+    await report_progress(25)
+    
+    # Update doc_id to use source_hash (consistent across all parts)
+    merged_doc.doc_id = source_hash
+    merged_doc.metadata.md5 = source_hash
+    processor.set_document(merged_doc)
+    
+    console.print(f"\n[black on cyan] Step 3/9: Document ready [/black on cyan]")
+    console.print(f"   Pages: {len(merged_doc.pages)}, Characters: {len(merged_doc.content):,}")
+    console.print(f"   doc_id: {merged_doc.doc_id}")
+    
+    # Dump to cache for reuse
+    cache_dir = Path.home() / ".zag" / "cache" / "readers" / "docling"
+    archive_path = merged_doc.dump(cache_dir)
+    console.print(f"   💾 Cached: {archive_path}")
+    
+    # Step 4: Inject custom metadata (30%)
+    await report_progress(30)
+    if metadata_with_mode:
+        console.print(f"\n[black on cyan] Step 4/9: Injecting metadata [/black on cyan]")
+        processor.set_business_context(custom_metadata=metadata_with_mode)
+        console.print(f"  ✅ Metadata injected")
+    
+    # Step 5: Split document (30-45%)
+    await report_progress(35)
+    console.print(f"\n[black on cyan] Step 5/9: Splitting document [/black on cyan]")
+    await processor.split_document(
+        max_chunk_tokens=MAX_CHUNK_TOKENS,
+        table_max_tokens=TABLE_MAX_TOKENS,
+        target_token_size=TARGET_TOKEN_SIZE,
+        export_visualization=True
+    )
+    console.print(f"  ✅ Split into {len(processor.units)} units")
+    await report_progress(45)
+    
+    # Step 6: Process tables (45-65%)
+    await report_progress(50)
+    console.print(f"\n[black on cyan] Step 6/9: Processing tables [/black on cyan]")
+    llm_uri = f"{LLM_PROVIDER}/{LLM_MODEL}"
+    await processor.process_tables(
+        llm_uri=llm_uri,
+        api_key=LLM_API_KEY,
+    )
+    console.print(f"  ✅ Tables processed")
+    await report_progress(65)
+    
+    # Step 7: Extract metadata (65-75%)
+    await report_progress(70)
+    console.print(f"\n[black on cyan] Step 7/9: Extracting metadata [/black on cyan]")
+    await processor.extract_metadata(
+        llm_uri=llm_uri,
+        api_key=LLM_API_KEY,
+        num_keywords=NUM_KEYWORDS,
+    )
+    console.print(f"  ✅ Metadata extracted")
+    await report_progress(75)
+    
+    # Step 8: Build vector index (75-90%)
+    await report_progress(80)
+    console.print(f"\n[black on cyan] Step 8/9: Building vector index [/black on cyan]")
+    await processor.build_vector_index(
+        embedding_uri=EMBEDDING_URI,
+        qdrant_host=VECTOR_STORE_HOST,
+        qdrant_port=VECTOR_STORE_PORT,
+        qdrant_grpc_port=vector_store_grpc_port,
+        collection_name=collection_name,
+        api_key=OPENAI_API_KEY
+    )
+    console.print(f"  ✅ Vector index built")
+    await report_progress(90)
+    
+    # Step 9: Build fulltext index (90-98%)
+    await report_progress(92)
+    console.print(f"\n[black on cyan] Step 9/9: Building fulltext index [/black on cyan]")
+    await processor.build_fulltext_index(
+        meilisearch_url=MEILISEARCH_HOST,
+        index_name=meilisearch_index_name
+    )
+    console.print(f"  ✅ Fulltext index built")
+    await report_progress(98)
     
     elapsed = time.time() - start_time
     
-    # Report near completion
-    await report_progress(95)
-    
     # Summary
     console.print(f"\n[bold green]📊 Processing Summary[/bold green]")
-    console.print(f"  Total parts: {len(parts)}")
-    console.print(f"  Successful: {success_count}")
-    console.print(f"  Failed: {error_count}")
-    console.print(f"  Total units: {total_units}")
+    console.print(f"  Parts: {len(page_ranges)}")
+    console.print(f"  Total units: {len(processor.units)}")
     console.print(f"  Time: {elapsed:.2f}s\n")
     
-    if error_count > 0:
-        raise Exception(f"Processing failed: {error_count}/{len(parts)} parts failed")
-    
-    # Report completion
-    await report_progress(98)
-    
     return {
-        "unit_count": total_units,
-        "parts_processed": success_count,
+        "unit_count": len(processor.units),
+        "parts": len(page_ranges),
         "elapsed_seconds": elapsed,
         "source_hash": source_hash
     }
