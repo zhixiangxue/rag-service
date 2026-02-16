@@ -3,10 +3,11 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Body
 from typing import List, Optional
 import os
 import json
+import sqlite3
 from pathlib import Path
 
 from zag.utils.hash import calculate_file_hash
-from ..utils.s3 import download_file_from_s3
+from ..utils.s3 import download_file_from_s3, download_file_from_s3_async
 from ..database import get_connection, now, generate_id
 from ..schemas import (
     DocumentResponse,
@@ -65,15 +66,27 @@ def _create_document_record(
         existing_doc = cursor.fetchone()
         
         if existing_doc:
-            # File already uploaded, delete duplicate and return existing doc_id
-            os.remove(file_path)
-            return {
-                "dataset_id": str(dataset_id),
-                "doc_id": str(existing_doc['id']),
-                "file_name": existing_doc['file_name'],
-                "file_hash": file_hash,
-                "is_duplicate": True
-            }
+            # File already uploaded, check if old file still exists
+            cursor.execute(
+                "SELECT file_path FROM documents WHERE id = ?",
+                (existing_doc['id'],)
+            )
+            old_doc = cursor.fetchone()
+            
+            if old_doc and os.path.exists(old_doc['file_path']):
+                # Old file exists, delete duplicate and reuse existing doc_id
+                os.remove(file_path)
+                return {
+                    "dataset_id": str(dataset_id),
+                    "doc_id": str(existing_doc['id']),
+                    "file_name": existing_doc['file_name'],
+                    "file_hash": file_hash,
+                    "is_duplicate": True
+                }
+            else:
+                # Old file doesn't exist, delete old record and continue with new upload
+                cursor.execute("DELETE FROM documents WHERE id = ?", (existing_doc['id'],))
+                conn.commit()
         
         # Extract workspace directory (parent of file)
         workspace_dir = os.path.dirname(file_path)
@@ -98,23 +111,47 @@ def _create_document_record(
         doc_id = file_hash
         
         # Create Document record with file_hash and metadata
-        cursor.execute(
-            """
-            INSERT INTO documents (id, dataset_id, file_name, file_path, workspace_dir, file_size, file_type, file_hash, metadata, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (doc_id, dataset_id, filename, file_path, workspace_dir, file_size, file_type, file_hash, metadata_json, DocumentStatus.PROCESSING, timestamp, timestamp)
-        )
-        conn.commit()
-        
-        return {
-            "dataset_id": str(dataset_id),
-            "doc_id": str(doc_id),
-            "file_name": filename,
-            "file_path": file_path,
-            "file_hash": file_hash,
-            "is_duplicate": False
-        }
+        # Use INSERT OR IGNORE to handle race conditions
+        try:
+            cursor.execute(
+                """
+                INSERT INTO documents (id, dataset_id, file_name, file_path, workspace_dir, file_size, file_type, file_hash, metadata, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (doc_id, dataset_id, filename, file_path, workspace_dir, file_size, file_type, file_hash, metadata_json, DocumentStatus.PROCESSING, timestamp, timestamp)
+            )
+            conn.commit()
+            
+            return {
+                "dataset_id": str(dataset_id),
+                "doc_id": str(doc_id),
+                "file_name": filename,
+                "file_path": file_path,
+                "file_hash": file_hash,
+                "is_duplicate": False
+            }
+        except sqlite3.IntegrityError:
+            # UNIQUE constraint violation: duplicate file_hash
+            # This means another request inserted the same file first
+            conn.rollback()
+            
+            # Delete the newly uploaded file (duplicate)
+            os.remove(file_path)
+            
+            # Re-query to get the existing document
+            cursor.execute(
+                "SELECT id, file_name FROM documents WHERE dataset_id = ? AND file_hash = ?",
+                (dataset_id, file_hash)
+            )
+            existing_doc = cursor.fetchone()
+            
+            return {
+                "dataset_id": str(dataset_id),
+                "doc_id": str(existing_doc['id']),
+                "file_name": existing_doc['file_name'],
+                "file_hash": file_hash,
+                "is_duplicate": True
+            }
     finally:
         conn.close()
 
@@ -147,39 +184,50 @@ async def upload_from_s3(
     metadata: Optional[str] = Body(None, embed=True)
 ):
     """Download file from S3 URL and add to dataset."""
-    # Extract filename from URL
     filename = Path(s3_url).name
     if not filename:
         raise HTTPException(status_code=400, detail="Invalid S3 URL")
     
     # Download file from S3 to temp location
     storage = get_storage()
-    temp_dir = storage.base_dir / dataset_id / "temp"
+    temp_dir = Path(storage.base_dir) / dataset_id / "temp"
     temp_dir.mkdir(parents=True, exist_ok=True)
     temp_file = temp_dir / filename
     
     try:
-        download_file_from_s3(
+        await download_file_from_s3_async(
             s3_url, 
             temp_file,
             aws_access_key_id=config.AWS_ACCESS_KEY_ID,
             aws_secret_access_key=config.AWS_SECRET_KEY
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to download file: {str(e)}")
+        error_msg = str(e)
+        print(f"[ERROR] S3 download failed for {filename}: {error_msg}")
+        
+        # S3 404 errors should return 400 (Bad Request), not 500
+        if "404" in error_msg or "Not Found" in error_msg:
+            raise HTTPException(status_code=400, detail=f"File not found in S3: {s3_url}")
+        else:
+            raise HTTPException(status_code=500, detail=f"Failed to download file: {error_msg}")
     
     # Move to final location using storage abstraction
-    with open(temp_file, 'rb') as f:
-        file_path = storage.save(f, filename, dataset_id)
-    temp_file.unlink()
+    try:
+        with open(temp_file, 'rb') as f:
+            file_path = storage.save(f, filename, dataset_id)
+        temp_file.unlink()
+    except Exception as e:
+        print(f"[ERROR] File save failed for {filename}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
     
     # Create document record (handles dataset validation, hash, duplicate check, insert)
     try:
         result = _create_document_record(dataset_id, file_path, filename, metadata)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"[ERROR] Document record creation failed for {filename}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create document record: {str(e)}")
     
     message = "File already exists, reusing existing document" if result["is_duplicate"] else "File uploaded successfully"
     return ApiResponse(success=True, code=200, message=message, data=result)
@@ -348,11 +396,30 @@ def get_document(dataset_id: str, doc_id: str):
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
     
+    # Generate file_url for distributed worker access
+    file_path = row["file_path"]
+    # Convert absolute path to relative path from UPLOAD_DIR
+    storage = get_storage()
+    base_dir = Path(storage.base_dir)
+    try:
+        rel_path = Path(file_path).relative_to(base_dir)
+        # Convert path separators to forward slashes for URL
+        rel_path_url = rel_path.as_posix()
+        
+        # Use localhost if API_HOST is 0.0.0.0 (for same-machine worker)
+        # For distributed workers, user should set API_HOST to actual IP/domain in .env
+        api_host = "localhost" if config.API_HOST == "0.0.0.0" else config.API_HOST
+        file_url = f"http://{api_host}:{config.API_PORT}/files/{rel_path_url}"
+    except ValueError:
+        # If file_path is not under base_dir, file_url is None
+        file_url = None
+    
     data = DocumentResponse(
         doc_id=str(row["id"]),
         dataset_id=str(row["dataset_id"]),
         file_name=row["file_name"],
-        file_path=row["file_path"],
+        file_path=file_path,
+        file_url=file_url,
         workspace_dir=row["workspace_dir"],
         file_size=row["file_size"],
         file_type=row["file_type"],

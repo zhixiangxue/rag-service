@@ -14,13 +14,19 @@ def generate_id() -> str:
 
 
 def get_connection():
-    """Get database connection."""
+    """Get database connection with WAL mode for better concurrency."""
     # Auto-create parent directory if it doesn't exist
     db_path = Path(DATABASE_PATH)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     
-    conn = sqlite3.connect(DATABASE_PATH)
+    conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row  # Enable dict-like access
+    
+    # Enable WAL mode for better read/write concurrency
+    conn.execute("PRAGMA journal_mode=WAL")
+    # Set busy timeout to 5 seconds (wait if database is locked)
+    conn.execute("PRAGMA busy_timeout=5000")
+    
     return conn
 
 
@@ -67,6 +73,26 @@ def init_db():
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_documents_dataset_hash 
         ON documents(dataset_id, file_hash)
+    """)
+    
+    # Create UNIQUE constraint for duplicate prevention (if not exists)
+    # Note: SQLite doesn't support ALTER TABLE ADD CONSTRAINT directly
+    # So we check and create it only if table is being created
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uniq_documents_dataset_hash 
+        ON documents(dataset_id, file_hash)
+    """)
+    
+    # Create index for fast document lookup by id and dataset_id
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_documents_id_dataset 
+        ON documents(id, dataset_id)
+    """)
+    
+    # Create index for dataset_id queries
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_documents_dataset 
+        ON documents(dataset_id)
     """)
     
     # Task table

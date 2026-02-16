@@ -3,6 +3,7 @@ S3 utilities for file operations
 """
 
 import os
+import asyncio
 import boto3
 from pathlib import Path
 from botocore.exceptions import ClientError, NoCredentialsError
@@ -16,7 +17,7 @@ def download_file_from_s3(
     aws_secret_access_key: Optional[str] = None
 ) -> bool:
     """
-    Download a file from S3 URL to local path
+    Download a file from S3 URL to local path (synchronous)
     
     Args:
         s3_url: S3 URL (e.g., s3://bucket-name/path/to/file.pdf)
@@ -76,7 +77,49 @@ def download_file_from_s3(
         s3_client.download_file(bucket_name, object_key, str(local_path))
         return True
     except ClientError as e:
-        raise ClientError(
-            e.response,
-            f"Failed to download from S3: {e}"
-        )
+        # Raise original error without wrapping to avoid message duplication
+        raise
+
+
+async def download_file_from_s3_async(
+    s3_url: str,
+    local_path: Path | str,
+    aws_access_key_id: Optional[str] = None,
+    aws_secret_access_key: Optional[str] = None
+) -> bool:
+    """
+    Download a file from S3 URL to local path (asynchronous, non-blocking)
+    
+    This function runs the synchronous boto3 download in a thread pool
+    to avoid blocking the event loop.
+    
+    Args:
+        s3_url: S3 URL (e.g., s3://bucket-name/path/to/file.pdf)
+        local_path: Local file path to save
+        aws_access_key_id: AWS access key ID (defaults to env variable)
+        aws_secret_access_key: AWS secret access key (defaults to env variable)
+        
+    Returns:
+        True if successful
+        
+    Raises:
+        ValueError: If S3 URL format is invalid
+        NoCredentialsError: If AWS credentials are not found
+        ClientError: If S3 operation fails
+        
+    Example:
+        >>> await download_file_from_s3_async(
+        ...     "s3://my-bucket/docs/file.pdf",
+        ...     Path("local/file.pdf")
+        ... )
+        True
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        download_file_from_s3,
+        s3_url,
+        local_path,
+        aws_access_key_id,
+        aws_secret_access_key
+    )

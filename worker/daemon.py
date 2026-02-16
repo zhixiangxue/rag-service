@@ -90,6 +90,27 @@ class RagWorker:
             response.raise_for_status()
             return response.json()["data"]
     
+    async def download_file(self, file_url: str, dest_path: Path) -> None:
+        """Download file from HTTP URL to local path.
+        
+        Args:
+            file_url: HTTP URL to download from
+            dest_path: Local destination path
+        """
+        console.print(f"[dim]Downloading file from: {file_url}[/dim]")
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.get(file_url)
+            response.raise_for_status()
+            
+            # Create parent directory if not exists
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Write file
+            with open(dest_path, 'wb') as f:
+                f.write(response.content)
+        
+        console.print(f"[green]File downloaded to: {dest_path}[/green]")
+    
     async def process_task(self, task: Dict[str, Any]):
         """Process a single task."""
         task_id = task["task_id"]
@@ -112,13 +133,26 @@ class RagWorker:
             
             console.print("[green]Task claimed successfully[/green]")
             
-            # Get document info (file path, workspace dir)
+            # Get document info (file_url for download)
             doc_info = await self.get_document_info(dataset_id, doc_id)
-            file_path = Path(doc_info["file_path"])
-            workspace_dir = Path(doc_info["workspace_dir"])
             
-            if not file_path.exists():
-                raise FileNotFoundError(f"File not found: {file_path}")
+            # Download file to temporary directory if file_url is available
+            if "file_url" in doc_info and doc_info["file_url"]:
+                file_url = doc_info["file_url"]
+                temp_dir = Path("/tmp/rag-worker") / task_id
+                file_path = temp_dir / doc_info["file_name"]
+                
+                try:
+                    await self.download_file(file_url, file_path)
+                except Exception as e:
+                    raise RuntimeError(f"Failed to download file: {e}")
+            else:
+                # Fallback to local file path (backward compatibility)
+                file_path = Path(doc_info["file_path"])
+                if not file_path.exists():
+                    raise FileNotFoundError(f"File not found: {file_path}")
+            
+            workspace_dir = Path(doc_info["workspace_dir"])
             
             # Get dataset info to retrieve collection_name
             async with httpx.AsyncClient() as client:
@@ -187,6 +221,17 @@ class RagWorker:
             
             console.print(f"\n[bold green]✓ Task {task_id} completed[/bold green]")
             
+            # Cleanup temporary file if downloaded
+            if "file_url" in doc_info and doc_info["file_url"]:
+                try:
+                    temp_dir = Path("/tmp/rag-worker") / task_id
+                    if temp_dir.exists():
+                        import shutil
+                        shutil.rmtree(temp_dir)
+                        console.print("[dim]Temporary files cleaned up[/dim]")
+                except Exception as e:
+                    console.print(f"[yellow]Failed to cleanup temp files: {e}[/yellow]")
+            
         except Exception as e:
             console.print(f"\n[bold red]✗ Task {task_id} failed: {e}[/bold red]")
             import traceback
@@ -197,6 +242,16 @@ class RagWorker:
                 TaskStatus.FAILED,
                 error_message={"error": str(e), "type": type(e).__name__}
             )
+            
+            # Cleanup temporary file on failure
+            try:
+                temp_dir = Path("/tmp/rag-worker") / task_id
+                if temp_dir.exists():
+                    import shutil
+                    shutil.rmtree(temp_dir)
+                    console.print("[dim]Temporary files cleaned up[/dim]")
+            except Exception as cleanup_error:
+                console.print(f"[yellow]Failed to cleanup temp files: {cleanup_error}[/yellow]")
     
     async def run(self):
         """Main worker loop."""

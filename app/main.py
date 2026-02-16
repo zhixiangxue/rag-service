@@ -27,6 +27,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount static files for distributed worker access
+from .config import UPLOAD_DIR
+upload_path = os.path.abspath(UPLOAD_DIR)
+if os.path.exists(upload_path):
+    app.mount("/files", StaticFiles(directory=upload_path), name="files")
+    print(f"[Main] Static files mounted at /files -> {upload_path}")
+else:
+    print(f"[Main] WARNING: Upload directory not found: {upload_path}")
+
 # Register routers
 app.include_router(health.router)
 app.include_router(datasets.router)
@@ -53,7 +62,7 @@ if __name__ == "__main__":
         "app.main:app",  # Module path (run from rag-service/ directory)
         host=API_HOST, 
         port=API_PORT,
-        reload=True,  # Enable auto-reload for development
+        # reload=True,  # Enable auto-reload for development
         timeout_keep_alive=180,  # 3 minutes for slow /query/web endpoint
         timeout_graceful_shutdown=5  # Only wait 5 seconds for graceful shutdown
     )

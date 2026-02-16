@@ -65,6 +65,7 @@ class DocumentResponse(BaseModel):
     dataset_id: str
     file_name: str
     file_path: str
+    file_url: Optional[str] = None  # HTTP URL for distributed worker access
     workspace_dir: str
     file_size: int
     file_type: str
