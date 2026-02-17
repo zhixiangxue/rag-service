@@ -257,3 +257,56 @@ def update_task(task_id: str, update: TaskStatusUpdate):
     )
     
     return ApiResponse(success=True, code=200, message="Task updated successfully", data=data)
+
+
+@router.post("/tasks/{task_id}/retry", response_model=ApiResponse[MessageResponse])
+def retry_task(task_id: str):
+    """Retry a task (reset terminal state task to PENDING).
+    
+    This endpoint allows retrying tasks in any terminal state (COMPLETED or FAILED).
+    The task will be reset to PENDING status and picked up by workers again.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    # Check if task exists
+    cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    current_status = row["status"]
+    doc_id = row["doc_id"]
+    
+    # Only allow retry for terminal states
+    if current_status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+        conn.close()
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot retry task in {current_status} status. Only terminal states (COMPLETED/FAILED) can be retried."
+        )
+    
+    timestamp = now()
+    
+    # Reset task to PENDING
+    cursor.execute(
+        "UPDATE tasks SET status = ?, progress = ?, error_message = NULL, updated_at = ? WHERE id = ?",
+        (TaskStatus.PENDING, 0, timestamp, task_id)
+    )
+    conn.commit()
+    
+    # Reset document status to PROCESSING
+    cursor.execute(
+        "UPDATE documents SET status = ?, updated_at = ? WHERE id = ?",
+        (DocumentStatus.PROCESSING, timestamp, doc_id)
+    )
+    conn.commit()
+    conn.close()
+    
+    return ApiResponse(
+        success=True,
+        code=200,
+        message=f"Task {task_id} has been reset to PENDING and will be retried",
+        data=MessageResponse(message=f"Task reset from {current_status} to PENDING")
+    )
