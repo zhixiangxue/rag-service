@@ -1,15 +1,54 @@
 """Worker configuration."""
 import os
+import sys
+from pathlib import Path
 from dotenv import load_dotenv
 
-# Load .env file
-load_dotenv()
+# ============================================
+# Load .env file with explicit path resolution
+# ============================================
+# Get the directory where this config.py is located
+CONFIG_DIR = Path(__file__).parent.resolve()
+WORKER_DIR = CONFIG_DIR
+RAG_SERVICE_DIR = WORKER_DIR.parent
+ENV_FILE = RAG_SERVICE_DIR / ".env"
+
+# Load .env file from rag-service directory
+if ENV_FILE.exists():
+    load_dotenv(dotenv_path=ENV_FILE)
+    print(f"[Worker Config] Loaded .env from: {ENV_FILE}")
+else:
+    print(f"[Worker Config] ERROR: .env file not found at: {ENV_FILE}")
+    print("[Worker Config] Please create .env file before starting the worker.")
+    sys.exit(1)
+
+
+def require_env(key: str, default_value: str = None) -> str:
+    """
+    Require an environment variable to be set.
+    
+    Args:
+        key: Environment variable name
+        default_value: Optional default value (if None, the variable is required)
+        
+    Returns:
+        The environment variable value
+        
+    Raises:
+        SystemExit: If required variable is not set
+    """
+    value = os.getenv(key, default_value)
+    if value is None:
+        print(f"[Worker Config] ERROR: Required environment variable '{key}' is not set.")
+        print(f"[Worker Config] Please add '{key}' to your .env file.")
+        sys.exit(1)
+    return value
 
 # ============================================
 # API Server Configuration (read from .env, same as app)
 # ============================================
-API_HOST = os.getenv("API_HOST", "0.0.0.0")
-API_PORT = int(os.getenv("API_PORT", "8000"))
+API_HOST = require_env("API_HOST", "0.0.0.0")
+API_PORT = int(require_env("API_PORT", "8000"))
 
 # ============================================
 # Worker Specific Configuration
@@ -17,28 +56,28 @@ API_PORT = int(os.getenv("API_PORT", "8000"))
 _worker_api_host = "localhost" if API_HOST == "0.0.0.0" else API_HOST
 API_BASE_URL = f"http://{_worker_api_host}:{API_PORT}"
 
-WORKER_POLL_INTERVAL = int(os.getenv("WORKER_POLL_INTERVAL", "5"))  # seconds
-WORKER_MAX_RETRIES = int(os.getenv("WORKER_MAX_RETRIES", "3"))
+WORKER_POLL_INTERVAL = int(require_env("WORKER_POLL_INTERVAL", "5"))  # seconds
+WORKER_MAX_RETRIES = int(require_env("WORKER_MAX_RETRIES", "3"))
 
 # ============================================
 # Full-Text Search Configuration
 # ============================================
-MEILISEARCH_HOST = os.getenv("MEILISEARCH_HOST", "http://localhost:7700")
-MEILISEARCH_API_KEY = os.getenv("MEILISEARCH_API_KEY")
+MEILISEARCH_HOST = require_env("MEILISEARCH_HOST", "http://localhost:7700")
+MEILISEARCH_API_KEY = os.getenv("MEILISEARCH_API_KEY")  # Optional
 
 # ============================================
 # Embedding Configuration (read from .env, same as app)
 # ============================================
-EMBEDDING_URI = os.getenv("EMBEDDING_URI", "openai/text-embedding-3-small")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-BAILIAN_API_KEY = os.getenv("BAILIAN_API_KEY")
-COHERE_API_KEY = os.getenv("COHERE_API_KEY")
+EMBEDDING_URI = require_env("EMBEDDING_URI", "openai/text-embedding-3-small")
+OPENAI_API_KEY = require_env("OPENAI_API_KEY")
+BAILIAN_API_KEY = os.getenv("BAILIAN_API_KEY")  # Optional
+COHERE_API_KEY = os.getenv("COHERE_API_KEY")  # Optional
 
 # ============================================
 # LLM Configuration (for extractors)
 # ============================================
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")  # openai, anthropic, bailian
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+LLM_PROVIDER = require_env("LLM_PROVIDER", "openai")  # openai, anthropic, bailian
+LLM_MODEL = require_env("LLM_MODEL", "gpt-4o-mini")
 
 # Dynamically select LLM API key based on provider
 if LLM_PROVIDER == "openai":
@@ -57,37 +96,37 @@ RERANKER_PROVIDER = os.getenv("RERANKER_PROVIDER", "cohere")  # cohere, sentence
 # Document Processing Configuration
 # ============================================
 # PDF Processing
-MAX_PAGES_PER_PART = int(os.getenv("MAX_PAGES_PER_PART", "100"))
+MAX_PAGES_PER_PART = int(require_env("MAX_PAGES_PER_PART", "100"))
 
 # Reader Configuration
-DOCUMENT_READER = os.getenv("DOCUMENT_READER", "docling")  # docling, markitdown, mineru
+DOCUMENT_READER = require_env("DOCUMENT_READER", "docling")  # docling, markitdown, mineru
 
 # Processing Settings (used in document_processor.py)
-USE_GPU = os.getenv("USE_GPU", "true").lower() == "true"
-NUM_THREADS = int(os.getenv("NUM_THREADS", "8"))
-MAX_CHUNK_TOKENS = int(os.getenv("MAX_CHUNK_TOKENS", "1200"))
-TABLE_MAX_TOKENS = int(os.getenv("TABLE_MAX_TOKENS", "1500"))
-TARGET_TOKEN_SIZE = int(os.getenv("TARGET_TOKEN_SIZE", "800"))
-NUM_KEYWORDS = int(os.getenv("NUM_KEYWORDS", "5"))
+USE_GPU = require_env("USE_GPU", "true").lower() == "true"
+NUM_THREADS = int(require_env("NUM_THREADS", "8"))
+MAX_CHUNK_TOKENS = int(require_env("MAX_CHUNK_TOKENS", "1200"))
+TABLE_MAX_TOKENS = int(require_env("TABLE_MAX_TOKENS", "1500"))
+TARGET_TOKEN_SIZE = int(require_env("TARGET_TOKEN_SIZE", "800"))
+NUM_KEYWORDS = int(require_env("NUM_KEYWORDS", "5"))
 
 # ============================================
 # Vector Store Configuration (read from .env, same as app)
 # ============================================
-VECTOR_STORE_TYPE = os.getenv("VECTOR_STORE_TYPE", "qdrant")
-VECTOR_STORE_HOST = os.getenv("VECTOR_STORE_HOST", "localhost")
-VECTOR_STORE_PORT = int(os.getenv("VECTOR_STORE_PORT", "6333"))
-VECTOR_STORE_GRPC_PORT = int(os.getenv("VECTOR_STORE_GRPC_PORT", "6334"))
+VECTOR_STORE_TYPE = require_env("VECTOR_STORE_TYPE", "qdrant")
+VECTOR_STORE_HOST = require_env("VECTOR_STORE_HOST", "localhost")
+VECTOR_STORE_PORT = int(require_env("VECTOR_STORE_PORT", "6333"))
+VECTOR_STORE_GRPC_PORT = int(require_env("VECTOR_STORE_GRPC_PORT", "6334"))
 
 # ============================================
 # Graph Database Configuration
 # ============================================
-FALKORDB_HOST = os.getenv("FALKORDB_HOST", "localhost")
-FALKORDB_PORT = int(os.getenv("FALKORDB_PORT", "6379"))
+FALKORDB_HOST = require_env("FALKORDB_HOST", "localhost")
+FALKORDB_PORT = int(require_env("FALKORDB_PORT", "6379"))
 
 # ============================================
 # HuggingFace Configuration
 # ============================================
-HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
+HF_ENDPOINT = require_env("HF_ENDPOINT", "https://hf-mirror.com")
 
 
 # ============================================
@@ -142,3 +181,74 @@ def validate_services():
             console.print(f"  ✗ {error}")
         console.print("\n[yellow]Please check your .env file and ensure all services are running.[/yellow]\n")
         raise RuntimeError(f"Service validation failed: {len(errors)} error(s)")
+
+
+# ============================================
+# Configuration Summary & Interactive Confirmation
+# ============================================
+def print_config_summary():
+    """Print configuration summary for user confirmation."""
+    print("\n" + "=" * 60)
+    print("  RAG Worker Configuration Summary")
+    print("=" * 60)
+    print(f"\n[API Server]")
+    print(f"  API_HOST: {API_HOST}")
+    print(f"  API_PORT: {API_PORT}")
+    print(f"  API_BASE_URL: {API_BASE_URL}")
+    print(f"\n[Worker Settings]")
+    print(f"  WORKER_POLL_INTERVAL: {WORKER_POLL_INTERVAL}s")
+    print(f"  WORKER_MAX_RETRIES: {WORKER_MAX_RETRIES}")
+    print(f"\n[Vector Store]")
+    print(f"  VECTOR_STORE_TYPE: {VECTOR_STORE_TYPE}")
+    print(f"  VECTOR_STORE_HOST: {VECTOR_STORE_HOST}")
+    print(f"  VECTOR_STORE_PORT: {VECTOR_STORE_PORT}")
+    print(f"  VECTOR_STORE_GRPC_PORT: {VECTOR_STORE_GRPC_PORT}")
+    print(f"\n[Meilisearch]")
+    print(f"  MEILISEARCH_HOST: {MEILISEARCH_HOST}")
+    print(f"\n[Embedding]")
+    print(f"  EMBEDDING_URI: {EMBEDDING_URI}")
+    print(f"  OPENAI_API_KEY: {'*' * 10} (set)")
+    print(f"\n[LLM]")
+    print(f"  LLM_PROVIDER: {LLM_PROVIDER}")
+    print(f"  LLM_MODEL: {LLM_MODEL}")
+    print(f"\n[Document Processing]")
+    print(f"  DOCUMENT_READER: {DOCUMENT_READER}")
+    print(f"  MAX_PAGES_PER_PART: {MAX_PAGES_PER_PART}")
+    print(f"  USE_GPU: {USE_GPU}")
+    print(f"  NUM_THREADS: {NUM_THREADS}")
+    print(f"  MAX_CHUNK_TOKENS: {MAX_CHUNK_TOKENS}")
+    print(f"  TARGET_TOKEN_SIZE: {TARGET_TOKEN_SIZE}")
+    print("=" * 60)
+
+
+def confirm_config() -> bool:
+    """
+    Interactive confirmation of configuration.
+
+    Returns:
+        True if user confirms, False otherwise
+    """
+    print_config_summary()
+
+    # Check if running in non-interactive mode (CI/CD, etc.)
+    if not sys.stdin.isatty():
+        print("\n[Worker Config] Running in non-interactive mode, skipping confirmation.")
+        return True
+
+    try:
+        response = input("\n[Worker Config] Do you want to proceed with this configuration? [Y/n]: ").strip().lower()
+        if response in ('', 'y', 'yes'):
+            print("[Worker Config] Configuration confirmed. Starting worker...\n")
+            return True
+        else:
+            print("[Worker Config] Configuration rejected. Exiting.")
+            return False
+    except (EOFError, KeyboardInterrupt):
+        print("\n[Worker Config] Interrupted. Exiting.")
+        return False
+
+
+# Run confirmation when this module is imported
+if __name__ != "__main__":
+    if not confirm_config():
+        sys.exit(1)

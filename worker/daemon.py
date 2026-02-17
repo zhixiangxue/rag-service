@@ -7,6 +7,7 @@ import time
 import asyncio
 import httpx
 import json
+import gc
 from pathlib import Path
 from typing import Optional, Dict, Any
 from datetime import datetime
@@ -22,6 +23,32 @@ from .indexers.classic import index_classic
 from .indexers.lod import index_lod
 
 console = Console()
+
+
+def cleanup_gpu_memory():
+    """Clean up GPU memory to prevent memory leaks."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            # Get memory stats before cleanup
+            allocated_before = torch.cuda.memory_allocated() / 1024**2  # MB
+            
+            # Clear cache
+            torch.cuda.empty_cache()
+            
+            # Force garbage collection
+            gc.collect()
+            
+            # Get memory stats after cleanup
+            allocated_after = torch.cuda.memory_allocated() / 1024**2  # MB
+            freed = allocated_before - allocated_after
+            
+            if freed > 0:
+                console.print(f"[dim]GPU memory freed: {freed:.1f} MB[/dim]")
+    except ImportError:
+        pass  # torch not available
+    except Exception as e:
+        console.print(f"[yellow]GPU cleanup warning: {e}[/yellow]")
 
 
 class RagWorker:
@@ -122,6 +149,9 @@ class RagWorker:
         console.print("\n" + "=" * 80)
         console.print(f"[bold cyan]Processing Task {task_id}[/bold cyan]")
         
+        temp_dir = None
+        doc_info = None
+        
         try:
             # Update to PROCESSING (claim task)
             console.print("[dim]Claiming task...[/dim]")
@@ -221,17 +251,6 @@ class RagWorker:
             
             console.print(f"\n[bold green]✓ Task {task_id} completed[/bold green]")
             
-            # Cleanup temporary file if downloaded
-            if "file_url" in doc_info and doc_info["file_url"]:
-                try:
-                    temp_dir = Path("/tmp/rag-worker") / task_id
-                    if temp_dir.exists():
-                        import shutil
-                        shutil.rmtree(temp_dir)
-                        console.print("[dim]Temporary files cleaned up[/dim]")
-                except Exception as e:
-                    console.print(f"[yellow]Failed to cleanup temp files: {e}[/yellow]")
-            
         except Exception as e:
             console.print(f"\n[bold red]✗ Task {task_id} failed: {e}[/bold red]")
             import traceback
@@ -242,20 +261,38 @@ class RagWorker:
                 TaskStatus.FAILED,
                 error_message={"error": str(e), "type": type(e).__name__}
             )
+        
+        finally:
+            # Cleanup GPU memory (always executed)
+            console.print("[dim]Cleaning up GPU memory...[/dim]")
+            cleanup_gpu_memory()
             
-            # Cleanup temporary file on failure
-            try:
-                temp_dir = Path("/tmp/rag-worker") / task_id
-                if temp_dir.exists():
-                    import shutil
-                    shutil.rmtree(temp_dir)
-                    console.print("[dim]Temporary files cleaned up[/dim]")
-            except Exception as cleanup_error:
-                console.print(f"[yellow]Failed to cleanup temp files: {cleanup_error}[/yellow]")
+            # Cleanup temporary files if downloaded
+            if doc_info and "file_url" in doc_info and doc_info["file_url"] and temp_dir:
+                try:
+                    if temp_dir.exists():
+                        import shutil
+                        shutil.rmtree(temp_dir)
+                        console.print("[dim]Temporary files cleaned up[/dim]")
+                except Exception as e:
+                    console.print(f"[yellow]Failed to cleanup temp files: {e}[/yellow]")
     
     async def run(self):
         """Main worker loop."""
         self.running = True
+        
+        # Check GPU availability and memory at startup
+        try:
+            import torch
+            if torch.cuda.is_available():
+                gpu_name = torch.cuda.get_device_name(0)
+                total_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3  # GB
+                console.print(f"\n[green]GPU detected: {gpu_name}[/green]")
+                console.print(f"[green]Total GPU memory: {total_memory:.1f} GB[/green]")
+            else:
+                console.print("\n[yellow]No GPU detected, using CPU mode[/yellow]")
+        except ImportError:
+            console.print("\n[yellow]PyTorch not available, GPU detection skipped[/yellow]")
         
         console.print("\n" + "=" * 70)
         console.print(Panel.fit(
