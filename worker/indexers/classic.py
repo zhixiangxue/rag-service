@@ -222,14 +222,18 @@ async def index_classic(
     console.print(f"  ✅ Vector index built")
     await report_progress(90)
     
-    # Step 9: Build fulltext index (90-98%)
+    # Step 9: Build fulltext index (90-98%) - Optional
     await report_progress(92)
     console.print(f"\n[black on cyan] Step 9/9: Building fulltext index [/black on cyan]")
-    await processor.build_fulltext_index(
-        meilisearch_url=MEILISEARCH_HOST,
-        index_name=meilisearch_index_name
-    )
-    console.print(f"  ✅ Fulltext index built")
+    try:
+        await processor.build_fulltext_index(
+            meilisearch_url=MEILISEARCH_HOST,
+            index_name=meilisearch_index_name
+        )
+        console.print(f"  ✅ Fulltext index built")
+    except Exception as e:
+        console.print(f"  [yellow]⚠ Fulltext index skipped: {str(e)[:80]}[/yellow]")
+        console.print(f"  [dim]Task will continue without fulltext search capability[/dim]")
     await report_progress(98)
     
     elapsed = time.time() - start_time
