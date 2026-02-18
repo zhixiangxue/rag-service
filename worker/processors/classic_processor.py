@@ -556,12 +556,6 @@ class ClassicDocumentProcessor:
             else:
                 merged_pdf = merged_pdf + pdf_mineru
         
-        # Dump merged PDF to cache for reuse
-        if merged_pdf:
-            cache_dir = Path.home() / ".zag" / "cache" / "readers" / "mineru"
-            archive_path = merged_pdf.dump(cache_dir)
-            console.print(f"  💾 Cached: {archive_path}")
-        
         # Parse tables from merged PDF (so span is relative to merged content)
         console.print(f"  ⏳ Parsing tables from merged content...")
         parser = TableParser()

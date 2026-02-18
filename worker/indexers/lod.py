@@ -173,6 +173,11 @@ async def index_lod(
     )
     doc = await corrector.acorrect_document(doc)
     console.print("  ✅ Headings corrected")
+    
+    # Dump to cache for reuse
+    cache_dir = Path.home() / ".zag" / "cache" / "readers" / "mineru"
+    archive_path = doc.dump(cache_dir)
+    console.print(f"  💾 Cached: {archive_path}")
 
     lod_full = doc.content
     
