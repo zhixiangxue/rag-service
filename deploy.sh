@@ -104,7 +104,7 @@ if command -v python3.12 &> /dev/null; then
                 # Try 1: Direct installation
                 echo "Attempt 1: Installing python3.12-venv via apt..."
                 sudo apt-get update
-                if sudo apt-get install -y python3.12-venv python3.12-dev 2>/dev/null; then
+                if sudo apt-get install -y python3.12-venv python3.12-dev; then
                     echo -e "${GREEN}[SUCCESS] python3.12-venv installed${NC}"
                     VENV_WORKS=true
                 else
@@ -114,13 +114,13 @@ if command -v python3.12 &> /dev/null; then
                     sudo add-apt-repository -y ppa:deadsnakes/ppa
                     sudo apt-get update
                     
-                    if sudo apt-get install -y python3.12-venv python3.12-dev 2>/dev/null; then
+                    if sudo apt-get install -y python3.12-venv python3.12-dev; then
                         echo -e "${GREEN}[SUCCESS] python3.12-venv installed${NC}"
                         VENV_WORKS=true
                     else
                         # Try 3: Use ensurepip fallback
                         echo -e "${YELLOW}[WARN] Failed. Attempt 3: Using ensurepip...${NC}"
-                        if python3.12 -m ensurepip --upgrade 2>/dev/null; then
+                        if python3.12 -m ensurepip --upgrade; then
                             echo -e "${GREEN}[SUCCESS] pip initialized via ensurepip${NC}"
                             VENV_WORKS=true
                         fi
@@ -129,7 +129,7 @@ if command -v python3.12 &> /dev/null; then
                 ;;
             *)
                 echo -e "${YELLOW}[WARN] Non-Debian system detected. Trying ensurepip...${NC}"
-                if python3.12 -m ensurepip --upgrade 2>/dev/null; then
+                if python3.12 -m ensurepip --upgrade; then
                     echo -e "${GREEN}[SUCCESS] pip initialized via ensurepip${NC}"
                     VENV_WORKS=true
                 fi
