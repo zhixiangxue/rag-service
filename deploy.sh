@@ -238,27 +238,21 @@ if command -v nvidia-smi &> /dev/null; then
 else
     echo -e "${YELLOW}[WARN] NVIDIA GPU not detected or drivers not installed${NC}"
     echo ""
-    echo -e "${YELLOW}For GPU support, you need to install NVIDIA drivers and CUDA Toolkit.${NC}"
-    echo -e "${YELLOW}This requires system reboot after installation.${NC}"
+    echo -e "${YELLOW}Installing NVIDIA drivers for GPU support...${NC}"
+    echo -e "${YELLOW}Note: This requires system reboot after installation.${NC}"
     echo ""
-    echo -e "${YELLOW}Installation commands (Ubuntu/Debian):${NC}"
+    
+    # Install NVIDIA driver
+    sudo apt-get update
+    sudo apt-get install -y nvidia-driver-550
+    
     echo ""
-    echo "  # 1. Update package list"
-    echo "  sudo apt-get update"
+    echo -e "${GREEN}[SUCCESS] NVIDIA driver installed${NC}"
+    echo -e "${RED}[ACTION REQUIRED] System reboot is required for GPU to work${NC}"
     echo ""
-    echo "  # 2. Install NVIDIA driver (replace 550 with your preferred version)"
-    echo "  sudo apt-get install -y nvidia-driver-550"
+    echo "After reboot, verify GPU with: nvidia-smi"
     echo ""
-    echo "  # 3. Reboot system (REQUIRED)"
-    echo "  sudo reboot"
-    echo ""
-    echo "  # 4. After reboot, verify GPU is working"
-    echo "  nvidia-smi"
-    echo ""
-    echo -e "${YELLOW}Alternative: Use AWS Deep Learning AMI (recommended, drivers pre-installed):${NC}"
-    echo "  AMI: Deep Learning AMI GPU PyTorch 2.x (Ubuntu 22.04)"
-    echo ""
-    echo "Continuing with CPU-only mode for now..."
+    echo "The deployment will continue with CPU-only mode for now..."
     echo ""
 fi
 echo ""
