@@ -249,6 +249,8 @@ def confirm_config() -> bool:
 
 
 # Run confirmation when this module is imported
-if __name__ != "__main__":
+# Skip confirmation for worker (runs in background/daemon mode)
+# Only run confirmation if explicitly executed as main script
+if __name__ == "__main__":
     if not confirm_config():
         sys.exit(1)
