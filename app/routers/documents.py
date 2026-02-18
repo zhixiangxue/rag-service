@@ -1,5 +1,6 @@
 """Document API endpoints."""
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Body
+from fastapi.responses import FileResponse
 from typing import List, Optional
 import os
 import json
@@ -397,17 +398,19 @@ def get_document(dataset_id: str, doc_id: str):
         raise HTTPException(status_code=404, detail="Document not found")
     
     # Generate file_url for distributed worker access
-    file_path = row["file_path"]
-    # Convert absolute path to relative path from UPLOAD_DIR
+    # Normalize path for cross-platform compatibility
+    raw_path = row["file_path"].replace("\\", "/")
+    file_path = Path(raw_path)
+    
+    # Convert to relative path from UPLOAD_DIR
     storage = get_storage()
     base_dir = Path(storage.base_dir)
     try:
-        rel_path = Path(file_path).relative_to(base_dir)
-        # Convert path separators to forward slashes for URL
+        rel_path = file_path.relative_to(base_dir)
+        # Convert to POSIX format for URL
         rel_path_url = rel_path.as_posix()
         
         # Use localhost if API_HOST is 0.0.0.0 (for same-machine worker)
-        # For distributed workers, user should set API_HOST to actual IP/domain in .env
         api_host = "localhost" if config.API_HOST == "0.0.0.0" else config.API_HOST
         file_url = f"http://{api_host}:{config.API_PORT}/files/{rel_path_url}"
     except ValueError:
@@ -418,7 +421,7 @@ def get_document(dataset_id: str, doc_id: str):
         doc_id=str(row["id"]),
         dataset_id=str(row["dataset_id"]),
         file_name=row["file_name"],
-        file_path=file_path,
+        file_path=row["file_path"],
         file_url=file_url,
         workspace_dir=row["workspace_dir"],
         file_size=row["file_size"],

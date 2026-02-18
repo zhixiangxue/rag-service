@@ -8,6 +8,7 @@ import asyncio
 import httpx
 import json
 import gc
+import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any
 from datetime import datetime
@@ -166,23 +167,21 @@ class RagWorker:
             # Get document info (file_url for download)
             doc_info = await self.get_document_info(dataset_id, doc_id)
             
-            # Download file to temporary directory if file_url is available
-            if "file_url" in doc_info and doc_info["file_url"]:
-                file_url = doc_info["file_url"]
-                temp_dir = Path("/tmp/rag-worker") / task_id
-                file_path = temp_dir / doc_info["file_name"]
-                
-                try:
-                    await self.download_file(file_url, file_path)
-                except Exception as e:
-                    raise RuntimeError(f"Failed to download file: {e}")
-            else:
-                # Fallback to local file path (backward compatibility)
-                file_path = Path(doc_info["file_path"])
-                if not file_path.exists():
-                    raise FileNotFoundError(f"File not found: {file_path}")
+            # Download file to temporary directory
+            if "file_url" not in doc_info or not doc_info["file_url"]:
+                raise ValueError(f"No file_url available for document {doc_id}")
             
-            workspace_dir = Path(doc_info["workspace_dir"])
+            file_url = doc_info["file_url"]
+            # Use system temporary directory (cross-platform)
+            temp_dir = Path(tempfile.gettempdir()) / "rag-worker" / task_id
+            file_path = temp_dir / doc_info["file_name"]
+            
+            try:
+                await self.download_file(file_url, file_path)
+            except Exception as e:
+                raise RuntimeError(f"Failed to download file: {e}")
+            
+            workspace_dir = temp_dir
             
             # Get dataset info to retrieve collection_name
             async with httpx.AsyncClient() as client:

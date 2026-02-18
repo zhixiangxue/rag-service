@@ -5,6 +5,7 @@ import random
 import string
 from abc import ABC, abstractmethod
 from typing import BinaryIO
+from pathlib import Path
 
 from . import config
 
@@ -49,30 +50,31 @@ class LocalFileStorage(FileStorage):
             dataset_id: Dataset ID for organizing files
             
         Returns:
-            Absolute file path
+            File path in POSIX format (forward slashes) for cross-platform compatibility
         """
-        # Organize by dataset_id
-        dataset_dir = os.path.join(self.base_dir, f"dataset_{dataset_id}")
-        os.makedirs(dataset_dir, exist_ok=True)
+        # Use Path for cross-platform compatibility
+        dataset_dir = Path(self.base_dir) / f"dataset_{dataset_id}"
+        dataset_dir.mkdir(parents=True, exist_ok=True)
         
         # Create random 6-char folder for this file
         random_folder = generate_random_folder()
-        file_dir = os.path.join(dataset_dir, random_folder)
+        file_dir = dataset_dir / random_folder
         
         # Ensure uniqueness
-        while os.path.exists(file_dir):
+        while file_dir.exists():
             random_folder = generate_random_folder()
-            file_dir = os.path.join(dataset_dir, random_folder)
+            file_dir = dataset_dir / random_folder
         
-        os.makedirs(file_dir, exist_ok=True)
+        file_dir.mkdir(parents=True, exist_ok=True)
         
         # Save file
-        file_path = os.path.join(file_dir, filename)
+        file_path = file_dir / filename
         
         with open(file_path, "wb") as f:
             shutil.copyfileobj(file_content, f)
         
-        return file_path
+        # Return POSIX path string for cross-platform compatibility
+        return file_path.as_posix()
     
     def delete(self, file_path: str) -> None:
         """Delete file from local filesystem."""

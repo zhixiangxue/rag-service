@@ -34,6 +34,31 @@ echo ""
 echo -e "${GREEN}[2/6] Checking Python 3.12 installation...${NC}"
 if command -v python3.12 &> /dev/null; then
     echo "Python 3.12 already installed: $(python3.12 --version)"
+    
+    # Check if venv module is available
+    if ! python3.12 -m venv --help &> /dev/null; then
+        echo -e "${YELLOW}[WARN] python3.12-venv not installed. Installing...${NC}"
+        
+        # Detect OS
+        if [ -f /etc/os-release ]; then
+            . /etc/os-release
+            OS=$ID
+        fi
+        
+        case $OS in
+            ubuntu|debian)
+                sudo apt-get update
+                sudo apt-get install -y python3.12-venv
+                ;;
+            *)
+                echo -e "${RED}[ERROR] Cannot install venv module automatically.${NC}"
+                echo "Please run: sudo apt-get install -y python3.12-venv"
+                exit 1
+                ;;
+        esac
+    else
+        echo "python3.12-venv already available"
+    fi
 else
     echo "Installing Python 3.12..."
     
@@ -100,12 +125,12 @@ echo ""
 
 # Step 4: Install zag-ai from GitHub
 echo -e "${GREEN}[4/6] Installing zag-ai from GitHub...${NC}"
-pip install "git+https://github.com/zhixiangxue/zag-ai.git#egg=zagpy[all]"
+pip install "zagpy[all] @ git+https://github.com/zhixiangxue/zag-ai.git"
 echo ""
 
 # Step 5: Install chak-ai from GitHub
 echo -e "${GREEN}[5/6] Installing chak-ai from GitHub...${NC}"
-pip install "git+https://github.com/zhixiangxue/chak-ai.git"
+pip install "chak-ai @ git+https://github.com/zhixiangxue/chak-ai.git"
 echo ""
 
 # Step 6: Install rag-service dependencies
