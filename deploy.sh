@@ -80,9 +80,18 @@ echo -e "${GREEN}[2/8] Checking Python 3.12 installation...${NC}"
 if command -v python3.12 &> /dev/null; then
     echo "Python 3.12 already installed: $(python3.12 --version)"
     
-    # Check if venv module is available
-    if ! python3.12 -m venv --help &> /dev/null; then
-        echo -e "${YELLOW}[WARN] python3.12-venv not installed. Installing...${NC}"
+    # Check if venv module is available by testing actual venv creation
+    echo "Testing venv functionality..."
+    TEST_VENV_DIR="/tmp/test_venv_$$"
+    VENV_WORKS=false
+    
+    if python3.12 -m venv "$TEST_VENV_DIR" &> /dev/null; then
+        VENV_WORKS=true
+        rm -rf "$TEST_VENV_DIR"
+        echo "python3.12-venv is functional"
+    else
+        rm -rf "$TEST_VENV_DIR"
+        echo -e "${YELLOW}[WARN] python3.12-venv not functional. Installing...${NC}"
         
         # Detect OS
         if [ -f /etc/os-release ]; then
@@ -97,6 +106,7 @@ if command -v python3.12 &> /dev/null; then
                 sudo apt-get update
                 if sudo apt-get install -y python3.12-venv python3.12-dev 2>/dev/null; then
                     echo -e "${GREEN}[SUCCESS] python3.12-venv installed${NC}"
+                    VENV_WORKS=true
                 else
                     # Try 2: Add deadsnakes PPA and retry
                     echo -e "${YELLOW}[WARN] Failed. Attempt 2: Adding deadsnakes PPA...${NC}"
@@ -106,15 +116,13 @@ if command -v python3.12 &> /dev/null; then
                     
                     if sudo apt-get install -y python3.12-venv python3.12-dev 2>/dev/null; then
                         echo -e "${GREEN}[SUCCESS] python3.12-venv installed${NC}"
+                        VENV_WORKS=true
                     else
                         # Try 3: Use ensurepip fallback
                         echo -e "${YELLOW}[WARN] Failed. Attempt 3: Using ensurepip...${NC}"
                         if python3.12 -m ensurepip --upgrade 2>/dev/null; then
                             echo -e "${GREEN}[SUCCESS] pip initialized via ensurepip${NC}"
-                        else
-                            echo -e "${RED}[ERROR] All methods failed to setup venv module${NC}"
-                            echo "Please manually install python3.12-venv or check Python installation"
-                            exit 1
+                            VENV_WORKS=true
                         fi
                     fi
                 fi
@@ -123,15 +131,17 @@ if command -v python3.12 &> /dev/null; then
                 echo -e "${YELLOW}[WARN] Non-Debian system detected. Trying ensurepip...${NC}"
                 if python3.12 -m ensurepip --upgrade 2>/dev/null; then
                     echo -e "${GREEN}[SUCCESS] pip initialized via ensurepip${NC}"
-                else
-                    echo -e "${RED}[ERROR] Cannot install venv module automatically.${NC}"
-                    echo "Please run: sudo apt-get install -y python3.12-venv python3.12-dev"
-                    exit 1
+                    VENV_WORKS=true
                 fi
                 ;;
         esac
-    else
-        echo "python3.12-venv already available"
+    fi
+    
+    # Final verification
+    if [ "$VENV_WORKS" = false ]; then
+        echo -e "${RED}[ERROR] Failed to setup venv functionality${NC}"
+        echo "Please manually run: sudo apt-get install -y python3.12-venv python3.12-dev"
+        exit 1
     fi
 else
     echo "Installing Python 3.12..."
