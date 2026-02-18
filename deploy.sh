@@ -217,32 +217,10 @@ echo -e "${GREEN}[5/8] Installing chak-ai from GitHub...${NC}"
 pip install "chakpy @ git+https://github.com/zhixiangxue/chak-ai.git"
 echo ""
 
-# Step 6: Install rag-service dependencies
-echo -e "${GREEN}[6/8] Installing rag-service dependencies...${NC}"
-
-# Install from pyproject.toml (includes core dependencies)
-if [ -f "pyproject.toml" ]; then
-    echo "Installing dependencies from pyproject.toml..."
-    pip install -e .
-fi
-
-# Install additional dependencies from requirements.txt (if any extras)
-if [ -f "requirements.txt" ]; then
-    echo "Installing additional dependencies from requirements.txt..."
-    # Filter out zag-ai line (already installed)
-    grep -v "git+https://github.com/zhixiangxue/zag-ai.git" requirements.txt > /tmp/requirements_filtered.txt || true
-    if [ -s /tmp/requirements_filtered.txt ]; then
-        pip install -r /tmp/requirements_filtered.txt
-    fi
-    rm -f /tmp/requirements_filtered.txt
-fi
-
-echo ""
-
-# Step 7: Verify installation
-echo -e "${GREEN}[Verification] Checking installed packages...${NC}"
+# Step 6: Verify installation
+echo -e "${GREEN}[6/8] Verifying installed packages...${NC}"
 echo "----------------------------------------"
-pip list | grep -E "(zagpy|chak-ai|fastapi|uvicorn)" || true
+pip list | grep -E "(zagpy|chakpy|fastapi|uvicorn)" || true
 echo "----------------------------------------"
 echo ""
 
