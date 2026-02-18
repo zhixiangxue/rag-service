@@ -217,6 +217,11 @@ echo -e "${GREEN}[5/8] Installing chak-ai from GitHub...${NC}"
 pip install "chakpy @ git+https://github.com/zhixiangxue/chak-ai.git"
 echo ""
 
+# Step 5.5: Install MinerU
+echo -e "${GREEN}[5.5/8] Installing MinerU...${NC}"
+pip install "mineru[all]>=2.7.6"
+echo ""
+
 # Step 6: Verify installation
 echo -e "${GREEN}[6/8] Verifying installed packages...${NC}"
 echo "----------------------------------------"
