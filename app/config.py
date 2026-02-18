@@ -101,6 +101,12 @@ AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
 API_HOST = require_env("API_HOST", "0.0.0.0")
 API_PORT = int(require_env("API_PORT", "8000"))
 
+# Public-facing host for file URLs (used by distributed workers)
+# If not set, defaults to API_HOST (unless API_HOST is 0.0.0.0, then uses localhost)
+API_PUBLIC_HOST = os.getenv("API_PUBLIC_HOST") or (
+    "localhost" if API_HOST == "0.0.0.0" else API_HOST
+)
+
 
 # ============================================
 # Configuration Summary & Interactive Confirmation

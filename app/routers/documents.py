@@ -412,25 +412,15 @@ def get_document(dataset_id: str, doc_id: str):
     storage = get_storage()
     base_dir = Path(storage.base_dir).resolve()
     
-    # Debug logging
-    import sys
-    print(f"[DEBUG] raw_path: {raw_path}", file=sys.stderr)
-    print(f"[DEBUG] file_path resolved: {file_path}", file=sys.stderr)
-    print(f"[DEBUG] base_dir resolved: {base_dir}", file=sys.stderr)
-    print(f"[DEBUG] file exists: {file_path.exists()}", file=sys.stderr)
-    
     try:
         rel_path = file_path.relative_to(base_dir)
         # Convert to POSIX format for URL
         rel_path_url = rel_path.as_posix()
         
-        # Use localhost if API_HOST is 0.0.0.0 (for same-machine worker)
-        api_host = "localhost" if config.API_HOST == "0.0.0.0" else config.API_HOST
-        file_url = f"http://{api_host}:{config.API_PORT}/files/{rel_path_url}"
-        print(f"[DEBUG] file_url generated: {file_url}", file=sys.stderr)
-    except ValueError as e:
+        # Use API_PUBLIC_HOST for distributed workers
+        file_url = f"http://{config.API_PUBLIC_HOST}:{config.API_PORT}/files/{rel_path_url}"
+    except ValueError:
         # If file_path is not under base_dir, file_url is None
-        print(f"[DEBUG] relative_to failed: {e}", file=sys.stderr)
         file_url = None
     
     data = DocumentResponse(
