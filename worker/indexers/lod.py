@@ -193,17 +193,42 @@ async def index_lod(
     if on_progress:
         await on_progress(30)
     
-    lod_low = extractor.compress(
-        text=lod_full,
-        prompt=QUICK_CHECK_PROMPT,
-        target_tokens=quick_check_target,
-        chunk_size=3000,
-        max_depth=2
-    )
-    lod_low_tokens = extractor.count_tokens(lod_low)
+    # Retry compression until it fits embedding model limit
+    MAX_EMBEDDING_TOKENS = 8000
+    max_retries = 3
+    current_target = quick_check_target
     
-    console.print(f"[green]✓ Quick-Check extracted[/green]")
-    console.print(f"  Tokens: {lod_low_tokens:,} ({lod_low_tokens/original_tokens:.1%})")
+    for attempt in range(1, max_retries + 1):
+        console.print(f"  Attempt {attempt}/{max_retries}: target={current_target} tokens")
+        
+        lod_low = extractor.compress(
+            text=lod_full,
+            prompt=QUICK_CHECK_PROMPT,
+            target_tokens=current_target,
+            chunk_size=3000,
+            max_depth=2
+        )
+        lod_low_tokens = extractor.count_tokens(lod_low)
+        
+        console.print(f"  Result: {lod_low_tokens} tokens")
+        
+        # Check if result fits embedding limit
+        if lod_low_tokens <= MAX_EMBEDDING_TOKENS:
+            console.print(f"[green]✓ Quick-Check extracted[/green]")
+            console.print(f"  Tokens: {lod_low_tokens:,} ({lod_low_tokens/original_tokens:.1%})")
+            break
+        
+        # Need to retry with lower target
+        if attempt < max_retries:
+            # Reduce target by 30% for next attempt
+            current_target = int(current_target * 0.7)
+            console.print(f"  ⚠️  Exceeds embedding limit ({MAX_EMBEDDING_TOKENS}), retrying with lower target...")
+        else:
+            # All retries failed
+            raise ValueError(
+                f"Failed to compress Quick-Check layer below {MAX_EMBEDDING_TOKENS} tokens after {max_retries} attempts. "
+                f"Final result: {lod_low_tokens} tokens. Document may be too complex for LOD mode."
+            )
     
     # Step 4: Extract Shortlist layer (lod_medium)
     console.print("\n[yellow]Step 4: Extracting Shortlist layer (MEDIUM)...[/yellow]")
@@ -258,7 +283,7 @@ async def index_lod(
         unit_id=lod_unit_id,
         doc_id=doc_id,
         content=lod_low,  # Primary content for retrieval
-        embedding_content=lod_low,  # Embed on low layer
+        embedding_content=lod_low,  # Guaranteed to fit embedding limit after retries
         metadata=UnitMetadata(
             doc_id=doc_id,
             unit_type=UnitType.TEXT,

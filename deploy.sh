@@ -20,7 +20,7 @@ if [ "$EUID" -eq 0 ]; then
 fi
 
 # Step 1: Clone repository
-echo -e "${GREEN}[1/6] Cloning rag-service repository...${NC}"
+echo -e "${GREEN}[1/8] Cloning rag-service repository...${NC}"
 if [ -d "rag-service" ]; then
     echo -e "${YELLOW}[WARN] Directory 'rag-service' already exists. Skipping clone.${NC}"
     cd rag-service
@@ -30,8 +30,53 @@ else
 fi
 echo ""
 
+# Step 1.5: Install and configure tmux
+echo -e "${GREEN}[1.5/8] Installing and configuring tmux...${NC}"
+if ! command -v tmux &> /dev/null; then
+    echo "Installing tmux..."
+    # Detect OS
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS=$ID
+    fi
+    
+    case $OS in
+        ubuntu|debian)
+            sudo apt-get update
+            sudo apt-get install -y tmux
+            ;;
+        amzn|rhel|centos|fedora)
+            sudo yum install -y tmux
+            ;;
+        *)
+            echo -e "${YELLOW}[WARN] Could not install tmux automatically. Please install manually.${NC}"
+            ;;
+    esac
+else
+    echo "tmux already installed: $(tmux -V)"
+fi
+
+# Configure tmux for better UX
+if [ ! -f ~/.tmux.conf ]; then
+    echo "Configuring tmux..."
+    cat > ~/.tmux.conf << 'EOF'
+# Enable mouse support
+set -g mouse on
+
+# Increase history limit
+set -g history-limit 10000
+
+# Start window numbering at 1
+set -g base-index 1
+EOF
+    echo "tmux configuration saved to ~/.tmux.conf"
+else
+    echo "~/.tmux.conf already exists, skipping configuration"
+fi
+echo ""
+
 # Step 2: Install Python 3.12
-echo -e "${GREEN}[2/6] Checking Python 3.12 installation...${NC}"
+echo -e "${GREEN}[2/8] Checking Python 3.12 installation...${NC}"
 if command -v python3.12 &> /dev/null; then
     echo "Python 3.12 already installed: $(python3.12 --version)"
     
@@ -48,11 +93,11 @@ if command -v python3.12 &> /dev/null; then
         case $OS in
             ubuntu|debian)
                 sudo apt-get update
-                sudo apt-get install -y python3.12-venv
+                sudo apt-get install -y python3.12-venv python3.12-dev
                 ;;
             *)
                 echo -e "${RED}[ERROR] Cannot install venv module automatically.${NC}"
-                echo "Please run: sudo apt-get install -y python3.12-venv"
+                echo "Please run: sudo apt-get install -y python3.12-venv python3.12-dev"
                 exit 1
                 ;;
         esac
@@ -105,7 +150,7 @@ fi
 echo ""
 
 # Step 3: Create virtual environment
-echo -e "${GREEN}[3/6] Creating virtual environment...${NC}"
+echo -e "${GREEN}[3/8] Creating virtual environment...${NC}"
 if [ -d ".venv" ]; then
     echo -e "${YELLOW}[WARN] Virtual environment already exists. Removing old one...${NC}"
     rm -rf .venv
@@ -124,17 +169,17 @@ pip install --upgrade pip setuptools wheel
 echo ""
 
 # Step 4: Install zag-ai from GitHub
-echo -e "${GREEN}[4/6] Installing zag-ai from GitHub...${NC}"
+echo -e "${GREEN}[4/8] Installing zag-ai from GitHub...${NC}"
 pip install "zagpy[all] @ git+https://github.com/zhixiangxue/zag-ai.git"
 echo ""
 
 # Step 5: Install chak-ai from GitHub
-echo -e "${GREEN}[5/6] Installing chak-ai from GitHub...${NC}"
+echo -e "${GREEN}[5/8] Installing chak-ai from GitHub...${NC}"
 pip install "chak-ai @ git+https://github.com/zhixiangxue/chak-ai.git"
 echo ""
 
 # Step 6: Install rag-service dependencies
-echo -e "${GREEN}[6/6] Installing rag-service dependencies...${NC}"
+echo -e "${GREEN}[6/8] Installing rag-service dependencies...${NC}"
 
 # Install from pyproject.toml (includes core dependencies)
 if [ -f "pyproject.toml" ]; then
@@ -162,19 +207,51 @@ pip list | grep -E "(zagpy|chak-ai|fastapi|uvicorn)" || true
 echo "----------------------------------------"
 echo ""
 
-# Step 8: Setup .env file
-echo -e "${GREEN}[Setup] Creating .env file...${NC}"
-if [ ! -f ".env" ]; then
-    if [ -f ".env.example" ]; then
-        cp .env.example .env
-        echo -e "${YELLOW}[INFO] Created .env from .env.example${NC}"
-        echo -e "${YELLOW}[ACTION REQUIRED] Please edit .env file with your configuration!${NC}"
-    else
-        echo -e "${YELLOW}[WARN] No .env.example found. Please create .env manually.${NC}"
-    fi
+# Step 7: Check GPU availability
+echo -e "${GREEN}[7/8] Checking GPU availability...${NC}"
+if command -v nvidia-smi &> /dev/null; then
+    echo "NVIDIA GPU detected:"
+    nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
+    echo ""
 else
-    echo ".env file already exists. Skipping."
+    echo -e "${YELLOW}[WARN] NVIDIA GPU not detected or drivers not installed${NC}"
+    echo ""
+    echo -e "${YELLOW}For GPU support, you need to install NVIDIA drivers and CUDA Toolkit.${NC}"
+    echo -e "${YELLOW}This requires system reboot after installation.${NC}"
+    echo ""
+    echo -e "${YELLOW}Installation commands (Ubuntu/Debian):${NC}"
+    echo ""
+    echo "  # 1. Update package list"
+    echo "  sudo apt update"
+    echo ""
+    echo "  # 2. Install NVIDIA driver (replace 550 with your preferred version)"
+    echo "  sudo apt install -y nvidia-driver-550"
+    echo ""
+    echo "  # 3. Reboot system (REQUIRED)"
+    echo "  sudo reboot"
+    echo ""
+    echo "  # 4. After reboot, verify GPU is working"
+    echo "  nvidia-smi"
+    echo ""
+    echo -e "${YELLOW}Alternative: Use AWS Deep Learning AMI (recommended, drivers pre-installed):${NC}"
+    echo "  AMI: Deep Learning AMI GPU PyTorch 2.x (Ubuntu 22.04)"
+    echo ""
+    echo "Continuing with CPU-only mode for now..."
+    echo ""
 fi
+echo ""
+
+# Step 8: Configuration reminder
+echo -e "${GREEN}[8/8] Configuration reminder...${NC}"
+echo ""
+echo -e "${YELLOW}[ACTION REQUIRED] Please create and configure .env file:${NC}"
+echo -e "${YELLOW}  1. Copy from template: cp .env.example .env${NC}"
+echo -e "${YELLOW}  2. Edit with your configuration: nano .env${NC}"
+echo ""
+echo -e "${YELLOW}[IMPORTANT] For distributed deployment (API + Worker on separate machines):${NC}"
+echo -e "${YELLOW}  - Set API_HOST=0.0.0.0 (listen on all interfaces)${NC}"
+echo -e "${YELLOW}  - Set API_PUBLIC_HOST=<your_server_public_ip> (e.g., 13.56.109.233)${NC}"
+echo -e "${YELLOW}  - This allows Worker to download files via HTTP${NC}"
 echo ""
 
 # Step 9: Display next steps
@@ -195,8 +272,8 @@ echo ""
 echo "  4. Start API server:"
 echo "     python -m app.main"
 echo ""
-echo "  5. Start Worker (in another terminal):"
-echo "     cd worker"
-echo "     python daemon.py"
+echo "  5. Start Worker (in tmux session, recommended):"
+echo "     tmux new -s worker"
+echo "     ./scripts/start_worker.sh"
 echo ""
 echo "=========================================="
