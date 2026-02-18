@@ -402,9 +402,16 @@ def get_document(dataset_id: str, doc_id: str):
     raw_path = row["file_path"].replace("\\", "/")
     file_path = Path(raw_path)
     
+    # Make path absolute if it's relative
+    if not file_path.is_absolute():
+        file_path = Path.cwd() / file_path
+    
+    file_path = file_path.resolve()
+    
     # Convert to relative path from UPLOAD_DIR
     storage = get_storage()
-    base_dir = Path(storage.base_dir)
+    base_dir = Path(storage.base_dir).resolve()
+    
     try:
         rel_path = file_path.relative_to(base_dir)
         # Convert to POSIX format for URL
