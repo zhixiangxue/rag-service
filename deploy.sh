@@ -214,7 +214,7 @@ echo ""
 
 # Step 5: Install chak-ai from GitHub
 echo -e "${GREEN}[5/8] Installing chak-ai from GitHub...${NC}"
-pip install "chak-ai @ git+https://github.com/zhixiangxue/chak-ai.git"
+pip install "chakpy @ git+https://github.com/zhixiangxue/chak-ai.git"
 echo ""
 
 # Step 6: Install rag-service dependencies
