@@ -310,3 +310,51 @@ def retry_task(task_id: str):
         message=f"Task {task_id} has been reset to PENDING and will be retried",
         data=MessageResponse(message=f"Task reset from {current_status} to PENDING")
     )
+
+
+@router.get("/tasks/stats", response_model=ApiResponse[dict])
+def get_task_stats():
+    """Get task statistics grouped by status.
+    
+    Returns:
+        - Total count
+        - Count by status (PENDING, PROCESSING, COMPLETED, FAILED)
+        - Progress percentage (completed / total)
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    # Get total count
+    cursor.execute("SELECT COUNT(*) FROM tasks")
+    total = cursor.fetchone()[0]
+    
+    # Get count by status
+    cursor.execute(
+        "SELECT status, COUNT(*) as count FROM tasks GROUP BY status"
+    )
+    status_counts = {row["status"]: row["count"] for row in cursor.fetchall()}
+    
+    conn.close()
+    
+    # Calculate progress
+    completed = status_counts.get(TaskStatus.COMPLETED, 0)
+    progress = (completed / total * 100) if total > 0 else 0
+    
+    return ApiResponse(
+        success=True,
+        code=200,
+        data={
+            "total": total,
+            "by_status": {
+                "pending": status_counts.get(TaskStatus.PENDING, 0),
+                "processing": status_counts.get(TaskStatus.PROCESSING, 0),
+                "completed": status_counts.get(TaskStatus.COMPLETED, 0),
+                "failed": status_counts.get(TaskStatus.FAILED, 0)
+            },
+            "progress": {
+                "completed": completed,
+                "total": total,
+                "percentage": round(progress, 2)
+            }
+        }
+    )
