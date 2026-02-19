@@ -15,6 +15,7 @@ from zag.embedders import Embedder
 from zag.storages.vector import QdrantVectorStore
 
 from ..constants import ProcessingMode
+from ..exceptions import ProcessingError, ProcessingErrorCode
 from ..config import (
     LLM_PROVIDER, LLM_MODEL, LLM_API_KEY,
     EMBEDDING_URI, OPENAI_API_KEY,
@@ -225,9 +226,15 @@ async def index_lod(
             console.print(f"  ⚠️  Exceeds embedding limit ({MAX_EMBEDDING_TOKENS}), retrying with lower target...")
         else:
             # All retries failed
-            raise ValueError(
-                f"Failed to compress Quick-Check layer below {MAX_EMBEDDING_TOKENS} tokens after {max_retries} attempts. "
-                f"Final result: {lod_low_tokens} tokens. Document may be too complex for LOD mode."
+            raise ProcessingError(
+                error_code=ProcessingErrorCode.UNSUITABLE_FOR_LOD_COMPRESSION_FAILED,
+                message=f"Failed to compress Quick-Check layer below {MAX_EMBEDDING_TOKENS} tokens after {max_retries} attempts",
+                details={
+                    "final_tokens": lod_low_tokens,
+                    "embedding_limit": MAX_EMBEDDING_TOKENS,
+                    "original_tokens": original_tokens
+                },
+                suggestion="Try classic mode instead"
             )
     
     # Step 4: Extract Shortlist layer (lod_medium)

@@ -14,4 +14,3 @@ class ProcessingMode:
     CLASSIC = "classic"
     LOD = "lod"
     GRAPH = "graph"
-

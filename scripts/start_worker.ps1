@@ -57,6 +57,6 @@ if ($venvPath) {
 }
 
 # Run as module from rag-service directory
-Write-Host "[3/3] Starting worker (python -m worker.main)..." -ForegroundColor Green
+Write-Host "[3/3] Starting worker (python -m worker.daemon)..." -ForegroundColor Green
 Write-Host "`n========================================`n" -ForegroundColor Cyan
-python -m worker.main
+python -m worker.daemon
