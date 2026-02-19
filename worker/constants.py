@@ -7,6 +7,7 @@ class TaskStatus:
     PROCESSING = "PROCESSING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class ProcessingMode:

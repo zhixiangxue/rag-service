@@ -8,6 +8,7 @@ class TaskStatus(str, Enum):
     PROCESSING = "PROCESSING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
     
     @staticmethod
     def is_valid_transition(from_status: str, to_status: str) -> bool:
@@ -22,10 +23,11 @@ class TaskStatus(str, Enum):
         """
         # Define valid transitions
         valid_transitions = {
-            TaskStatus.PENDING: [TaskStatus.PROCESSING],
-            TaskStatus.PROCESSING: [TaskStatus.PROCESSING, TaskStatus.COMPLETED, TaskStatus.FAILED],  # Allow PROCESSING→PROCESSING for progress updates
+            TaskStatus.PENDING: [TaskStatus.PROCESSING, TaskStatus.CANCELLED],
+            TaskStatus.PROCESSING: [TaskStatus.PROCESSING, TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED],  # Allow PROCESSING→PROCESSING for progress updates
             TaskStatus.COMPLETED: [],  # Terminal state
-            TaskStatus.FAILED: []  # Terminal state
+            TaskStatus.FAILED: [],  # Terminal state
+            TaskStatus.CANCELLED: []  # Terminal state
         }
         
         return to_status in valid_transitions.get(from_status, [])

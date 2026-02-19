@@ -114,3 +114,9 @@ class ProcessingError(Exception):
         if self.suggestion:
             parts.append(f"Suggestion: {self.suggestion}")
         return " | ".join(parts)
+
+
+class TaskCancelledException(Exception):
+    """Exception raised when task is cancelled by user."""
+    pass
+

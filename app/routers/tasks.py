@@ -21,7 +21,7 @@ def get_all_tasks(limit: int = 10, status: Optional[str] = None):
     
     Args:
         limit: Maximum number of tasks to return (default: 10)
-        status: Filter by task status (PENDING, PROCESSING, COMPLETED, FAILED)
+        status: Filter by task status (PENDING, PROCESSING, COMPLETED, FAILED, CANCELLED)
     """
     conn = get_connection()
     cursor = conn.cursor()
@@ -107,7 +107,7 @@ def get_task_stats():
     
     Returns:
         - Total count
-        - Count by status (PENDING, PROCESSING, COMPLETED, FAILED)
+        - Count by status (PENDING, PROCESSING, COMPLETED, FAILED, CANCELLED)
         - Progress percentage (completed / total)
     """
     conn = get_connection()
@@ -138,7 +138,8 @@ def get_task_stats():
                 "pending": status_counts.get(TaskStatus.PENDING, 0),
                 "processing": status_counts.get(TaskStatus.PROCESSING, 0),
                 "completed": status_counts.get(TaskStatus.COMPLETED, 0),
-                "failed": status_counts.get(TaskStatus.FAILED, 0)
+                "failed": status_counts.get(TaskStatus.FAILED, 0),
+                "cancelled": status_counts.get(TaskStatus.CANCELLED, 0)
             },
             "progress": {
                 "completed": completed,
@@ -278,6 +279,12 @@ def update_task(task_id: str, update: TaskStatusUpdate):
             (DocumentStatus.FAILED, timestamp, doc_id)
         )
         conn.commit()
+    elif update.status == TaskStatus.CANCELLED:
+        cursor.execute(
+            "UPDATE documents SET status = ?, updated_at = ? WHERE id = ?",
+            (DocumentStatus.FAILED, timestamp, doc_id)
+        )
+        conn.commit()
     elif update.status == TaskStatus.PROCESSING:
         cursor.execute(
             "UPDATE documents SET status = ?, updated_at = ? WHERE id = ?",
@@ -311,7 +318,7 @@ def update_task(task_id: str, update: TaskStatusUpdate):
 def retry_task(task_id: str):
     """Retry a task (reset terminal state task to PENDING).
     
-    This endpoint allows retrying tasks in any terminal state (COMPLETED or FAILED).
+    This endpoint allows retrying tasks in any terminal state (COMPLETED, FAILED, or CANCELLED).
     The task will be reset to PENDING status and picked up by workers again.
     """
     conn = get_connection()
@@ -328,11 +335,11 @@ def retry_task(task_id: str):
     doc_id = row["doc_id"]
     
     # Only allow retry for terminal states
-    if current_status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+    if current_status not in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
         conn.close()
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot retry task in {current_status} status. Only terminal states (COMPLETED/FAILED) can be retried."
+            detail=f"Cannot retry task in {current_status} status. Only terminal states (COMPLETED/FAILED/CANCELLED) can be retried."
         )
     
     timestamp = now()
@@ -358,3 +365,57 @@ def retry_task(task_id: str):
         message=f"Task {task_id} has been reset to PENDING and will be retried",
         data=MessageResponse(message=f"Task reset from {current_status} to PENDING")
     )
+
+
+@router.post("/tasks/{task_id}/cancel", response_model=ApiResponse[MessageResponse])
+def cancel_task(task_id: str):
+    """Cancel a running task.
+    
+    This endpoint allows cancelling tasks in non-terminal states (PENDING or PROCESSING).
+    The task will be marked as CANCELLED and workers will stop processing it.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    # Check if task exists
+    cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    current_status = row["status"]
+    doc_id = row["doc_id"]
+    
+    # Only allow cancelling non-terminal states
+    if current_status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
+        conn.close()
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot cancel task in {current_status} status. Task is already in terminal state."
+        )
+    
+    timestamp = now()
+    
+    # Update task status to CANCELLED
+    cursor.execute(
+        "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+        (TaskStatus.CANCELLED, timestamp, task_id)
+    )
+    conn.commit()
+    
+    # Update document status to FAILED (cancelled task treated as failed)
+    cursor.execute(
+        "UPDATE documents SET status = ?, updated_at = ? WHERE id = ?",
+        (DocumentStatus.FAILED, timestamp, doc_id)
+    )
+    conn.commit()
+    conn.close()
+    
+    return ApiResponse(
+        success=True,
+        code=200,
+        message=f"Task {task_id} has been cancelled",
+        data=MessageResponse(message=f"Task cancelled from {current_status} to CANCELLED")
+    )
+

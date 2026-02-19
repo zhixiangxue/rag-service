@@ -17,7 +17,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .constants import TaskStatus, ProcessingMode
-from .exceptions import ProcessingError
+from .exceptions import ProcessingError, TaskCancelledException
 from . import config
 from .indexers.classic import index_classic
 from .indexers.lod import index_lod
@@ -32,8 +32,8 @@ async def update_task_status(
     progress: Optional[int] = None,
     error_message: Optional[Dict[str, Any]] = None,
     unit_count: Optional[int] = None
-) -> bool:
-    """Update task status via API."""
+) -> Optional[Dict[str, Any]]:
+    """Update task status via API and return task data."""
     payload = {"status": status}
     if progress is not None:
         payload["progress"] = progress
@@ -49,10 +49,12 @@ async def update_task_status(
                 json=payload
             )
             response.raise_for_status()
-            return True
+            result = response.json()
+            # Return task data from response
+            return result.get("data") if result.get("success") else None
     except Exception as e:
         console.print(f"[red]Failed to update task status: {e}[/red]")
-        return False
+        return None
 
 
 async def get_document_info(api_base_url: str, dataset_id: str, doc_id: str) -> Dict[str, Any]:
@@ -104,9 +106,9 @@ async def process_single_task(task: Dict[str, Any]) -> int:
     try:
         # Update to PROCESSING (claim task)
         console.print("[dim]Claiming task...[/dim]")
-        claimed = await update_task_status(api_base_url, task_id, TaskStatus.PROCESSING, progress=0)
+        task_data = await update_task_status(api_base_url, task_id, TaskStatus.PROCESSING, progress=0)
         
-        if not claimed:
+        if not task_data:
             console.print(f"[yellow]Failed to claim task {task_id}[/yellow]")
             return 1
         
@@ -158,15 +160,23 @@ async def process_single_task(task: Dict[str, Any]) -> int:
         
         # Progress callback
         async def update_progress(progress: int):
-            """Update task progress, ignore 409 (task already in terminal state)."""
+            """Update task progress, detect cancellation, ignore 409 (task already in terminal state)."""
             try:
-                await update_task_status(api_base_url, task_id, TaskStatus.PROCESSING, progress=progress)
+                response = await update_task_status(api_base_url, task_id, TaskStatus.PROCESSING, progress=progress)
+                
+                # Check if task was cancelled
+                if response and response.get("status") == TaskStatus.CANCELLED:
+                    raise TaskCancelledException(f"Task {task_id} was cancelled by user")
+                    
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 409:
                     # Task already completed or failed, ignore progress update
                     console.print(f"[dim]Task in terminal state, skipping progress update[/dim]")
                 else:
                     console.print(f"[yellow]Progress update failed ({e.response.status_code}): {e}[/yellow]")
+            except TaskCancelledException:
+                # Re-raise cancellation exception
+                raise
             except Exception as e:
                 console.print(f"[yellow]Progress update failed: {e}[/yellow]")
         
@@ -202,6 +212,14 @@ async def process_single_task(task: Dict[str, Any]) -> int:
         
         console.print(f"\n[bold green]✓ Task {task_id} completed[/bold green]")
         return 0
+    
+    except TaskCancelledException as e:
+        # Task was cancelled by user
+        console.print(f"\n[bold yellow]⚠ Task {task_id} cancelled: {e}[/bold yellow]")
+        
+        # Task status already updated by API, no need to update again
+        # Just clean up and exit
+        return 2  # Exit code 2 indicates cancellation
         
     except ProcessingError as e:
         # Structured processing error with error code
