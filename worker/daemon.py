@@ -125,16 +125,29 @@ class RagWorker:
             console.print("[dim]Will exit after current task completes (press Ctrl+C again to force)[/dim]")
             self.shutdown_requested = True
     
-    async def get_pending_tasks(self) -> list:
-        """Fetch pending tasks from API."""
+    async def claim_task(self) -> Optional[Dict[str, Any]]:
+        """Claim a pending task from API (atomic operation).
+        
+        Returns:
+            Task data if available, None if no tasks or claim failed
+        """
         async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.api_base_url}/tasks/pending",
-                params={"limit": 1}  # Process one at a time
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data["data"]
+            try:
+                response = await client.post(f"{self.api_base_url}/tasks/claim")
+                response.raise_for_status()
+                data = response.json()
+                return data["data"]
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    # No pending tasks
+                    return None
+                else:
+                    # Unexpected error
+                    console.print(f"[red]Failed to claim task: {e.response.status_code}[/red]")
+                    return None
+            except Exception as e:
+                console.print(f"[red]Failed to claim task: {e}[/red]")
+                return None
     
     def process_task_in_subprocess(self, task: Dict[str, Any]) -> int:
         """Process a task in an isolated subprocess.
@@ -231,13 +244,13 @@ class RagWorker:
                 
                 console.print(f"[dim]Polling tasks... ({datetime.now().strftime('%H:%M:%S')})[/dim]")
                 
-                # Fetch pending tasks
-                tasks = await self.get_pending_tasks()
+                # Claim a pending task (atomic operation)
+                task = await self.claim_task()
                 
-                if tasks:
-                    console.print(f"[cyan]Found {len(tasks)} pending task(s)[/cyan]")
+                if task:
+                    console.print(f"[cyan]Claimed task {task['task_id']}[/cyan]")
                     
-                    # Check GPU memory before accepting task
+                    # Check GPU memory before processing
                     gpu_usage = check_gpu_memory_usage()
                     if gpu_usage is not None:
                         console.print(f"[dim]GPU memory usage: {gpu_usage * 100:.1f}%[/dim]")
@@ -246,19 +259,15 @@ class RagWorker:
                             console.print(
                                 f"[yellow]GPU memory usage ({gpu_usage * 100:.1f}%) > "
                                 f"threshold ({self.gpu_memory_threshold * 100:.0f}%), "
-                                f"skipping task and cleaning...[/yellow]"
+                                f"cleaning before processing...[/yellow]"
                             )
                             cleanup_gpu_memory()
-                            await asyncio.sleep(self.poll_interval)
-                            continue
                     
-                    # Process tasks in subprocess
-                    for task in tasks:
-                        # Check shutdown flag before starting new task
-                        if self.shutdown_requested:
-                            console.print("[yellow]Shutdown requested, skipping new tasks[/yellow]")
-                            break
-                        
+                    # Check shutdown flag before starting
+                    if self.shutdown_requested:
+                        console.print("[yellow]Shutdown requested, skipping task[/yellow]")
+                    else:
+                        # Process task in subprocess
                         exit_code = self.process_task_in_subprocess(task)
                         
                         # Cleanup after subprocess (defensive)

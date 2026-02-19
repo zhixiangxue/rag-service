@@ -2,6 +2,7 @@
 from fastapi import APIRouter, HTTPException
 from typing import List, Optional
 import json
+import threading
 
 from ..database import get_connection, now
 from ..schemas import (
@@ -13,6 +14,14 @@ from ..schemas import (
 from ..constants import TaskStatus, DocumentStatus
 
 router = APIRouter(tags=["tasks"])
+
+# Global lock for task claiming (application-level lock)
+# TODO ⚠️ Performance note: This is a global lock that serializes all claim requests.
+# For current scale (10-20 workers), this is acceptable since claim overhead (~10-50ms) 
+# is negligible compared to task processing time (minutes). 
+# Future optimization: Use database-level row locking (PostgreSQL FOR UPDATE SKIP LOCKED) 
+# for true parallel claiming when scaling to 100+ workers.
+_task_claim_lock = threading.Lock()
 
 
 @router.get("/tasks", response_model=ApiResponse[List[TaskResponse]])
@@ -99,6 +108,87 @@ def get_pending_tasks(limit: int = 10):
         ))
     
     return ApiResponse(success=True, code=200, data=results)
+
+
+@router.post("/tasks/claim", response_model=ApiResponse[TaskResponse])
+def claim_task():
+    """Atomically claim a pending task (for worker).
+    
+    This endpoint uses application-level locking to ensure only one worker 
+    can claim each task, preventing race conditions. Returns 404 if no pending 
+    tasks are available.
+    
+    Thread-safe and database-agnostic.
+    """
+    # Acquire global lock to prevent race conditions
+    with _task_claim_lock:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Find first pending task
+            cursor.execute(
+                """
+                SELECT t.id, t.dataset_id, t.doc_id, t.mode, t.created_at, d.metadata as doc_metadata
+                FROM tasks t
+                JOIN documents d ON t.doc_id = d.id
+                WHERE t.status = ? 
+                ORDER BY t.created_at ASC 
+                LIMIT 1
+                """,
+                (TaskStatus.PENDING,)
+            )
+            row = cursor.fetchone()
+            
+            if not row:
+                conn.close()
+                raise HTTPException(status_code=404, detail="No pending tasks available")
+            
+            task_id = row["id"]
+            dataset_id = row["dataset_id"]
+            doc_id = row["doc_id"]
+            mode = row["mode"] if row["mode"] else "classic"
+            created_at = row["created_at"]
+            metadata = json.loads(row["doc_metadata"]) if row["doc_metadata"] else None
+            
+            timestamp = now()
+            
+            # Update task status to PROCESSING
+            cursor.execute(
+                "UPDATE tasks SET status = ?, progress = 0, updated_at = ? WHERE id = ?",
+                (TaskStatus.PROCESSING, timestamp, task_id)
+            )
+            conn.commit()
+            
+            # Update document status to PROCESSING
+            cursor.execute(
+                "UPDATE documents SET status = ?, updated_at = ? WHERE id = ?",
+                (DocumentStatus.PROCESSING, timestamp, doc_id)
+            )
+            conn.commit()
+            conn.close()
+            
+            data = TaskResponse(
+                task_id=str(task_id),
+                dataset_id=str(dataset_id),
+                doc_id=str(doc_id),
+                mode=mode,
+                status=TaskStatus.PROCESSING,
+                progress=0,
+                metadata=metadata,
+                error_message=None,
+                created_at=created_at,
+                updated_at=timestamp
+            )
+            
+            return ApiResponse(success=True, code=200, message="Task claimed successfully", data=data)
+            
+        except HTTPException:
+            # Re-raise HTTP exceptions (like 404)
+            raise
+        except Exception as e:
+            conn.close()
+            raise HTTPException(status_code=500, detail=f"Failed to claim task: {str(e)}")
 
 
 @router.get("/tasks/stats", response_model=ApiResponse[dict])
