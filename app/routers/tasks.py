@@ -66,50 +66,6 @@ def get_all_tasks(limit: int = 10, status: Optional[str] = None):
     return ApiResponse(success=True, code=200, data=results)
 
 
-@router.get("/tasks/pending", response_model=ApiResponse[List[TaskResponse]])
-def get_pending_tasks(limit: int = 10):
-    """Get pending tasks for worker to process.
-    
-    Note: Worker must call PATCH /tasks/{task_id} to claim task (update status to PROCESSING)
-    to prevent multiple workers from processing the same task.
-    """
-    conn = get_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute(
-        """
-        SELECT t.*, d.metadata as doc_metadata 
-        FROM tasks t
-        JOIN documents d ON t.doc_id = d.id
-        WHERE t.status = ? 
-        ORDER BY t.created_at ASC 
-        LIMIT ?
-        """,
-        (TaskStatus.PENDING, limit)
-    )
-    rows = cursor.fetchall()
-    conn.close()
-    
-    results = []
-    for row in rows:
-        error_message = json.loads(row["error_message"]) if row["error_message"] else None
-        metadata = json.loads(row["doc_metadata"]) if row["doc_metadata"] else None
-        results.append(TaskResponse(
-            task_id=str(row["id"]),
-            dataset_id=str(row["dataset_id"]),
-            doc_id=str(row["doc_id"]),
-            mode=row["mode"] if "mode" in row.keys() else "classic",
-            status=row["status"],
-            progress=row["progress"],
-            metadata=metadata,
-            error_message=error_message,
-            created_at=row["created_at"],
-            updated_at=row["updated_at"]
-        ))
-    
-    return ApiResponse(success=True, code=200, data=results)
-
-
 @router.post("/tasks/claim", response_model=ApiResponse[TaskResponse])
 def claim_task():
     """Atomically claim a pending task (for worker).
