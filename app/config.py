@@ -46,31 +46,31 @@ def require_env(key: str, default_value: str = None) -> str:
 # ============================================
 # Database Configuration
 # ============================================
-DATABASE_PATH = require_env("DATABASE_PATH", "./rag_service.db")
+DATABASE_PATH = require_env("DATABASE_PATH")
 
 # ============================================
 # Vector Store Configuration
 # ============================================
-VECTOR_STORE_TYPE = require_env("VECTOR_STORE_TYPE", "qdrant")
-VECTOR_STORE_HOST = require_env("VECTOR_STORE_HOST", "localhost")
-VECTOR_STORE_PORT = int(require_env("VECTOR_STORE_PORT", "6333"))
-VECTOR_STORE_GRPC_PORT = int(require_env("VECTOR_STORE_GRPC_PORT", "6334"))
+VECTOR_STORE_TYPE = require_env("VECTOR_STORE_TYPE")
+VECTOR_STORE_HOST = require_env("VECTOR_STORE_HOST")
+VECTOR_STORE_PORT = int(require_env("VECTOR_STORE_PORT"))
+VECTOR_STORE_GRPC_PORT = int(require_env("VECTOR_STORE_GRPC_PORT"))
 
 # ============================================
 # Graph Database Configuration
 # ============================================
-FALKORDB_HOST = require_env("FALKORDB_HOST", "localhost")
-FALKORDB_PORT = int(require_env("FALKORDB_PORT", "6379"))
+FALKORDB_HOST = require_env("FALKORDB_HOST")
+FALKORDB_PORT = int(require_env("FALKORDB_PORT"))
 
 # TODO: Remove these default fallback settings when dataset management is fully implemented
 # Currently used as fallback when dataset_id is not found in database
-DEFAULT_COLLECTION_NAME = require_env("DEFAULT_COLLECTION_NAME", "mortgage_guidelines")
-DEFAULT_VECTOR_ENGINE = require_env("DEFAULT_VECTOR_ENGINE", "qdrant")
+DEFAULT_COLLECTION_NAME = require_env("DEFAULT_COLLECTION_NAME")
+DEFAULT_VECTOR_ENGINE = require_env("DEFAULT_VECTOR_ENGINE")
 
 # ============================================
 # Embedding Configuration
 # ============================================
-EMBEDDING_URI = require_env("EMBEDDING_URI", "openai/text-embedding-3-small")
+EMBEDDING_URI = require_env("EMBEDDING_URI")
 OPENAI_API_KEY = require_env("OPENAI_API_KEY")
 BAILIAN_API_KEY = os.getenv("BAILIAN_API_KEY")  # Optional
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")  # Optional
@@ -78,13 +78,13 @@ COHERE_API_KEY = os.getenv("COHERE_API_KEY")  # Optional
 # ============================================
 # LLM Configuration
 # ============================================
-LLM_URI_TREE_RETRIEVAL = require_env("LLM_URI_TREE_RETRIEVAL", "openai/gpt-4o-mini")
+LLM_URI_TREE_RETRIEVAL = require_env("LLM_URI_TREE_RETRIEVAL")
 
 # ============================================
 # File Storage Configuration
 # ============================================
-UPLOAD_DIR = require_env("UPLOAD_DIR", "./uploads")
-STORAGE_TYPE = require_env("STORAGE_TYPE", "local")  # local, s3
+UPLOAD_DIR = require_env("UPLOAD_DIR")
+STORAGE_TYPE = require_env("STORAGE_TYPE")  # local, s3
 # S3 Configuration (if using S3)
 S3_BUCKET = os.getenv("S3_BUCKET")
 S3_REGION = os.getenv("S3_REGION", "us-east-1")
@@ -98,8 +98,8 @@ AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
 # ============================================
 # API Server Configuration
 # ============================================
-API_HOST = require_env("API_HOST", "0.0.0.0")
-API_PORT = int(require_env("API_PORT", "8000"))
+API_HOST = require_env("API_HOST")
+API_PORT = int(require_env("API_PORT"))
 
 # Public-facing host for file URLs (used by distributed workers)
 # If not set, defaults to API_HOST (unless API_HOST is 0.0.0.0, then uses localhost)
