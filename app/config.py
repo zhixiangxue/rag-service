@@ -59,8 +59,8 @@ VECTOR_STORE_GRPC_PORT = int(require_env("VECTOR_STORE_GRPC_PORT"))
 # ============================================
 # Graph Database Configuration
 # ============================================
-FALKORDB_HOST = require_env("FALKORDB_HOST")
-FALKORDB_PORT = int(require_env("FALKORDB_PORT"))
+#FALKORDB_HOST = require_env("FALKORDB_HOST")
+#FALKORDB_PORT = int(require_env("FALKORDB_PORT"))
 
 # TODO: Remove these default fallback settings when dataset management is fully implemented
 # Currently used as fallback when dataset_id is not found in database
