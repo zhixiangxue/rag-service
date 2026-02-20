@@ -105,10 +105,10 @@ async def _perform_vector_query(dataset_id: str, request: QueryRequest) -> ApiRe
             metadata = result.metadata if isinstance(result.metadata, dict) else result.metadata.__dict__
             unit_results.append(UnitResponse(
                 unit_id=result.unit_id,
-                unit_type=metadata.get("unit_type", "text"),
+                unit_type=result.unit_type,
                 content=result.content,
                 metadata=metadata,
-                doc_id=metadata.get("doc_id"),
+                doc_id=result.doc_id,
                 score=result.score
             ))
         
