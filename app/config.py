@@ -78,7 +78,8 @@ COHERE_API_KEY = os.getenv("COHERE_API_KEY")  # Optional
 # ============================================
 # LLM Configuration
 # ============================================
-LLM_URI_TREE_RETRIEVAL = require_env("LLM_URI_TREE_RETRIEVAL")
+LLM_PROVIDER = require_env("LLM_PROVIDER")
+LLM_MODEL = require_env("LLM_MODEL")
 
 # ============================================
 # File Storage Configuration
@@ -127,7 +128,8 @@ def print_config_summary():
     print(f"  EMBEDDING_URI: {EMBEDDING_URI}")
     print(f"  OPENAI_API_KEY: {'*' * 10} (set)")
     print(f"\n[LLM]")
-    print(f"  LLM_URI_TREE_RETRIEVAL: {LLM_URI_TREE_RETRIEVAL}")
+    print(f"  LLM_PROVIDER: {LLM_PROVIDER}")
+    print(f"  LLM_MODEL: {LLM_MODEL}")
     print(f"\n[API Server]")
     print(f"  API_HOST: {API_HOST}")
     print(f"  API_PORT: {API_PORT}")
