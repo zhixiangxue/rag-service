@@ -20,7 +20,7 @@ if [ "$EUID" -eq 0 ]; then
 fi
 
 # Step 1: Clone repository
-echo -e "${GREEN}[1/8] Cloning rag-service repository...${NC}"
+echo -e "${GREEN}[1/9] Cloning rag-service repository...${NC}"
 if [ -d "rag-service" ]; then
     echo -e "${YELLOW}[WARN] Directory 'rag-service' already exists. Skipping clone.${NC}"
     cd rag-service
@@ -31,7 +31,7 @@ fi
 echo ""
 
 # Step 1.5: Install and configure tmux
-echo -e "${GREEN}[1.5/8] Installing and configuring tmux...${NC}"
+echo -e "${GREEN}[1.5/9] Installing and configuring tmux...${NC}"
 if ! command -v tmux &> /dev/null; then
     echo "Installing tmux..."
     # Detect OS
@@ -76,7 +76,7 @@ fi
 echo ""
 
 # Step 2: Install Python 3.12
-echo -e "${GREEN}[2/8] Checking Python 3.12 installation...${NC}"
+echo -e "${GREEN}[2/9] Checking Python 3.12 installation...${NC}"
 if command -v python3.12 &> /dev/null; then
     echo "Python 3.12 already installed: $(python3.12 --version)"
     
@@ -189,7 +189,7 @@ fi
 echo ""
 
 # Step 3: Create virtual environment
-echo -e "${GREEN}[3/8] Creating virtual environment...${NC}"
+echo -e "${GREEN}[3/9] Creating virtual environment...${NC}"
 if [ -d ".venv" ]; then
     echo -e "${YELLOW}[WARN] Virtual environment already exists. Removing old one...${NC}"
     rm -rf .venv
@@ -208,29 +208,29 @@ pip install --upgrade pip setuptools wheel
 echo ""
 
 # Step 4: Install zag-ai from GitHub
-echo -e "${GREEN}[4/8] Installing zag-ai from GitHub...${NC}"
-pip install "zagpy[all] @ git+https://github.com/zhixiangxue/zag-ai.git"
+echo -e "${GREEN}[4/9] Installing zag-ai from GitHub...${NC}"
+pip install --force-reinstall --no-cache-dir "zagpy[all] @ git+https://github.com/zhixiangxue/zag-ai.git"
 echo ""
 
 # Step 5: Install chak-ai from GitHub
-echo -e "${GREEN}[5/8] Installing chak-ai from GitHub...${NC}"
-pip install "chakpy @ git+https://github.com/zhixiangxue/chak-ai.git"
+echo -e "${GREEN}[5/9] Installing chak-ai from GitHub...${NC}"
+pip install --force-reinstall --no-cache-dir "chakpy @ git+https://github.com/zhixiangxue/chak-ai.git"
 echo ""
 
 # Step 5.5: Install MinerU
-echo -e "${GREEN}[5.5/8] Installing MinerU...${NC}"
+echo -e "${GREEN}[5.5/9] Installing MinerU...${NC}"
 pip install "mineru[all]>=2.7.6"
 echo ""
 
 # Step 6: Verify installation
-echo -e "${GREEN}[6/8] Verifying installed packages...${NC}"
+echo -e "${GREEN}[6/9] Verifying installed packages...${NC}"
 echo "----------------------------------------"
 pip list | grep -E "(zagpy|chakpy|fastapi|uvicorn)" || true
 echo "----------------------------------------"
 echo ""
 
 # Step 7: Check GPU availability
-echo -e "${GREEN}[7/8] Checking GPU availability...${NC}"
+echo -e "${GREEN}[7/9] Checking GPU availability...${NC}"
 if command -v nvidia-smi &> /dev/null; then
     echo "NVIDIA GPU detected:"
     nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
@@ -258,7 +258,7 @@ fi
 echo ""
 
 # Step 8: Configuration reminder
-echo -e "${GREEN}[8/8] Configuration reminder...${NC}"
+echo -e "${GREEN}[8/9] Configuration reminder...${NC}"
 echo ""
 echo -e "${YELLOW}[ACTION REQUIRED] Please create and configure .env file:${NC}"
 echo -e "${YELLOW}  1. Copy from template: cp .env.example .env${NC}"
@@ -268,6 +268,29 @@ echo -e "${YELLOW}[IMPORTANT] For distributed deployment (API + Worker on separa
 echo -e "${YELLOW}  - Set API_HOST=0.0.0.0 (listen on all interfaces)${NC}"
 echo -e "${YELLOW}  - Set API_PUBLIC_HOST=<your_server_public_ip> (e.g., 13.56.109.233)${NC}"
 echo -e "${YELLOW}  - This allows Worker to download files via HTTP${NC}"
+echo ""
+
+# Step 9: Verify readers (MinerU and Docling)
+echo -e "${GREEN}[9/9] Verifying document readers...${NC}"
+echo ""
+echo -e "${YELLOW}Running reader verification script...${NC}"
+echo -e "${YELLOW}This will test MinerU and Docling to ensure they work correctly.${NC}"
+echo ""
+
+if python scripts/verify_readers.py; then
+    echo -e "${GREEN}[SUCCESS] All readers verified successfully!${NC}"
+else
+    echo -e "${RED}[WARNING] Some readers failed verification${NC}"
+    echo -e "${YELLOW}You may still continue, but document processing may not work properly.${NC}"
+    echo -e "${YELLOW}Please check the error messages above and fix the issues.${NC}"
+    echo ""
+    read -p "Continue anyway? (y/N) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Deployment aborted."
+        exit 1
+    fi
+fi
 echo ""
 
 # Step 9: Display next steps
