@@ -559,9 +559,16 @@ class ClassicDocumentProcessor:
         # Parse tables from merged PDF (so span is relative to merged content)
         console.print(f"  ⏳ Parsing tables from merged content...")
         parser = TableParser()
+        
+        # Prepare unit metadata with business context (same as TextUnit)
         unit_metadata = UnitMetadata(
             document=merged_pdf.metadata.model_dump_deep()
         )
+        
+        # Inject business custom metadata from original document (same as PDF.split() does for TextUnit)
+        if self.document and self.document.metadata and self.document.metadata.custom:
+            unit_metadata.custom.update(self.document.metadata.custom)
+        
         table_units = parser.parse(
             text=merged_pdf.content,
             metadata=unit_metadata,
