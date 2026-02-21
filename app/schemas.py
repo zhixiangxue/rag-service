@@ -70,6 +70,7 @@ class DocumentResponse(BaseModel):
     file_size: int
     file_type: str
     file_hash: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None  # Document metadata from upload
     status: str  # PROCESSING, COMPLETED, FAILED, DISABLED
     task_id: Optional[str] = None
     unit_count: Optional[int] = None

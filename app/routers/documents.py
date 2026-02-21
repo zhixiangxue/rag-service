@@ -255,6 +255,9 @@ async def create_task(
         conn.close()
         raise HTTPException(status_code=404, detail="Document not found")
     
+    # Parse document metadata
+    doc_metadata = json.loads(doc["metadata"]) if doc.get("metadata") else None
+    
     timestamp = now()
     task_id = generate_id()
     
@@ -287,6 +290,7 @@ async def create_task(
             mode=mode.value,
             status=TaskStatus.PENDING,
             progress=0,
+            metadata=doc_metadata,
             created_at=timestamp,
             updated_at=timestamp
         )
@@ -308,8 +312,15 @@ def list_document_tasks(dataset_id: str, doc_id: str):
         conn.close()
         raise HTTPException(status_code=404, detail="Document not found")
     
+    # Query tasks and JOIN documents to get metadata
     cursor.execute(
-        "SELECT * FROM tasks WHERE dataset_id = ? AND doc_id = ? ORDER BY created_at DESC",
+        """
+        SELECT t.*, d.metadata as doc_metadata
+        FROM tasks t
+        LEFT JOIN documents d ON t.doc_id = d.id
+        WHERE t.dataset_id = ? AND t.doc_id = ?
+        ORDER BY t.created_at DESC
+        """,
         (dataset_id, doc_id)
     )
     rows = cursor.fetchall()
@@ -318,6 +329,7 @@ def list_document_tasks(dataset_id: str, doc_id: str):
     results = []
     for row in rows:
         error_message = json.loads(row["error_message"]) if row["error_message"] else None
+        doc_metadata = json.loads(row["doc_metadata"]) if row.get("doc_metadata") else None
         results.append(TaskResponse(
             task_id=str(row["id"]),
             dataset_id=str(row["dataset_id"]),
@@ -325,6 +337,7 @@ def list_document_tasks(dataset_id: str, doc_id: str):
             mode=row["mode"] if "mode" in row.keys() else "classic",
             status=row["status"],
             progress=row["progress"],
+            metadata=doc_metadata,
             error_message=error_message,
             created_at=row["created_at"],
             updated_at=row["updated_at"]
@@ -362,6 +375,7 @@ def list_documents(dataset_id: str, status: Optional[str] = None):
     
     results = []
     for row in rows:
+        doc_metadata = json.loads(row["metadata"]) if row.get("metadata") else None
         results.append(DocumentResponse(
             doc_id=str(row["id"]),
             dataset_id=str(row["dataset_id"]),
@@ -371,6 +385,7 @@ def list_documents(dataset_id: str, status: Optional[str] = None):
             file_size=row["file_size"],
             file_type=row["file_type"],
             file_hash=row["file_hash"] if "file_hash" in row.keys() else None,
+            metadata=doc_metadata,
             status=row["status"],
             task_id=str(row["task_id"]) if row["task_id"] else None,
             unit_count=row["unit_count"],
@@ -396,6 +411,9 @@ def get_document(dataset_id: str, doc_id: str):
     
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Parse document metadata
+    doc_metadata = json.loads(row["metadata"]) if row.get("metadata") else None
     
     # Generate file_url for distributed worker access
     # Normalize path for cross-platform compatibility
@@ -433,6 +451,7 @@ def get_document(dataset_id: str, doc_id: str):
         file_size=row["file_size"],
         file_type=row["file_type"],
         file_hash=row["file_hash"] if "file_hash" in row.keys() else None,
+        metadata=doc_metadata,
         status=row["status"],
         task_id=str(row["task_id"]) if row["task_id"] else None,
         unit_count=row["unit_count"],
