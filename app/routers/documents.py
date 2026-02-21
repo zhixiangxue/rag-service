@@ -256,7 +256,7 @@ async def create_task(
         raise HTTPException(status_code=404, detail="Document not found")
     
     # Parse document metadata
-    doc_metadata = json.loads(doc["metadata"]) if doc.get("metadata") else None
+    doc_metadata = json.loads(doc["metadata"]) if "metadata" in doc.keys() and doc["metadata"] else None
     
     timestamp = now()
     task_id = generate_id()
@@ -329,7 +329,7 @@ def list_document_tasks(dataset_id: str, doc_id: str):
     results = []
     for row in rows:
         error_message = json.loads(row["error_message"]) if row["error_message"] else None
-        doc_metadata = json.loads(row["doc_metadata"]) if row.get("doc_metadata") else None
+        doc_metadata = json.loads(row["doc_metadata"]) if "doc_metadata" in row.keys() and row["doc_metadata"] else None
         results.append(TaskResponse(
             task_id=str(row["id"]),
             dataset_id=str(row["dataset_id"]),
@@ -375,7 +375,7 @@ def list_documents(dataset_id: str, status: Optional[str] = None):
     
     results = []
     for row in rows:
-        doc_metadata = json.loads(row["metadata"]) if row.get("metadata") else None
+        doc_metadata = json.loads(row["metadata"]) if "metadata" in row.keys() and row["metadata"] else None
         results.append(DocumentResponse(
             doc_id=str(row["id"]),
             dataset_id=str(row["dataset_id"]),
@@ -413,7 +413,7 @@ def get_document(dataset_id: str, doc_id: str):
         raise HTTPException(status_code=404, detail="Document not found")
     
     # Parse document metadata
-    doc_metadata = json.loads(row["metadata"]) if row.get("metadata") else None
+    doc_metadata = json.loads(row["metadata"]) if "metadata" in row.keys() and row["metadata"] else None
     
     # Generate file_url for distributed worker access
     # Normalize path for cross-platform compatibility
