@@ -43,7 +43,7 @@ async def update_task_status(
         payload["unit_count"] = unit_count
     
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.patch(
                 f"{api_base_url}/tasks/{task_id}",
                 json=payload
@@ -59,7 +59,7 @@ async def update_task_status(
 
 async def get_document_info(api_base_url: str, dataset_id: str, doc_id: str) -> Dict[str, Any]:
     """Get document information from API."""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
             f"{api_base_url}/datasets/{dataset_id}/documents/{doc_id}"
         )
@@ -133,7 +133,7 @@ async def process_single_task(task: Dict[str, Any]) -> int:
         workspace_dir = temp_dir
         
         # Get dataset collection_name
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(f"{api_base_url}/datasets/{dataset_id}")
             response.raise_for_status()
             dataset_info = response.json()["data"]
@@ -259,6 +259,22 @@ async def process_single_task(task: Dict[str, Any]) -> int:
         return 1
     
     finally:
+        # Check if task is still in PROCESSING state (e.g., interrupted by Ctrl+C)
+        # If so, cancel it so it can be retried without manual intervention
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(f"{api_base_url}/tasks/{task_id}")
+                if response.status_code == 200:
+                    current_task = response.json().get("data")
+                    if current_task and current_task.get("status") == TaskStatus.PROCESSING:
+                        console.print("[yellow]Task still in PROCESSING state, cancelling...[/yellow]")
+                        # Use the cancel API instead of manually updating status
+                        cancel_response = await client.post(f"{api_base_url}/tasks/{task_id}/cancel")
+                        if cancel_response.status_code == 200:
+                            console.print("[green]Task cancelled successfully[/green]")
+        except Exception as e:
+            console.print(f"[dim]Failed to cancel task in finally: {e}[/dim]")
+        
         # Cleanup temporary files
         if doc_info and "file_url" in doc_info and doc_info["file_url"] and temp_dir:
             try:

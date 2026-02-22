@@ -29,11 +29,12 @@ from datetime import datetime
 
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+from tenacity import retry, stop_after_attempt, wait_exponential, wait_fixed, retry_if_exception_type
+from pydantic import BaseModel
+from functools import wraps
 
 # Zag imports
-from zag.readers.docling import DoclingReader
-from docling.datamodel.pipeline_options import PdfPipelineOptions
-from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
+from zag.readers import MinerUReader
 from zag.splitters import MarkdownHeaderSplitter, TextSplitter, TableSplitter, RecursiveMergingSplitter
 from zag.extractors import KeywordExtractor, TableEnricher, TableSummarizer
 from zag.postprocessors.correctors import HeadingCorrector
@@ -50,6 +51,53 @@ from ..constants import ProcessingMode
 from ..config import LLM_PROVIDER, LLM_MODEL, LLM_API_KEY
 
 console = Console()
+
+
+def checkpoint_cache(func):
+    """
+    Decorator to cache function calls in checkpoint
+    
+    Like functools.lru_cache but persists to disk via processor checkpoint.
+    Automatically generates cache key from function name + kwargs.
+    """
+    @wraps(func)
+    async def wrapper(self, *args, **kwargs):
+        # Generate cache key from function name + kwargs
+        cache_key = f"{func.__name__}({','.join(f'{k}={v}' for k, v in sorted(kwargs.items()))})" if kwargs else f"{func.__name__}()"
+        
+        # Check cache
+        if cache_key in self._completed_calls:
+            console.print(f"[dim]⏭️  {cache_key} (cached)[/dim]")
+            # Return appropriate default based on method
+            return getattr(self, 'units', None) if 'units' in func.__name__ or 'split' in func.__name__ or 'process' in func.__name__ or 'extract' in func.__name__ else None
+        
+        # Execute function
+        result = await func(self, *args, **kwargs)
+        
+        # Save to cache
+        self._completed_calls.add(cache_key)
+        self._save_checkpoint()
+        console.print(f"[dim]✓ {cache_key}[/dim]")
+        
+        return result
+    
+    return wrapper
+
+
+class PagePart(BaseModel):
+    """Represents a part of a large PDF file for chunked processing"""
+    start_page: int  # 1-based inclusive
+    end_page: int    # 1-based inclusive
+    completed: bool = False
+    part_doc: Optional[PDF] = None  # The processed document for this part (with heading correction)
+    
+    def __repr__(self):
+        status = "✓" if self.completed else "○"
+        return f"Part({self.start_page}-{self.end_page}) {status}"
+    
+    class Config:
+        # Allow arbitrary types (for PDF objects)
+        arbitrary_types_allowed = True
 
 
 class ClassicDocumentProcessor:
@@ -69,26 +117,65 @@ class ClassicDocumentProcessor:
         self.pdf_path: Optional[Path] = None  # Current PDF being processed
         self.document: Optional[PDF] = None
         self.units: List[Union[TextUnit, TableUnit]] = []
-        self.vector_indexer: Optional[VectorIndexer] = None
-        self.fulltext_indexer: Optional[FullTextIndexer] = None
         
         # Page range being processed (for large file processing)
         self._current_page_range: Optional[tuple] = None  # (start, end) 1-based inclusive
+        
+        # Track completed steps for checkpoint recovery
+        self._completed_calls: set = set()  # Cache function calls: "method_name(arg1=val1,arg2=val2)"
+        self._parts: List[PagePart] = []  # Track parts for large file processing
 
         # Lazy-initialized subdirectories
-        self._raw_dir: Optional[Path] = None
         self._split_dir: Optional[Path] = None
-        self._tables_dir: Optional[Path] = None
-        self._metadata_dir: Optional[Path] = None
-        self._indices_dir: Optional[Path] = None
-
-    @property
-    def raw_dir(self) -> Path:
-        """Directory for raw markdown cache"""
-        if self._raw_dir is None:
-            self._raw_dir = self.output_root / "raw"
-            self._raw_dir.mkdir(exist_ok=True)
-        return self._raw_dir
+        self._cache_dir: Optional[Path] = None
+    
+    @classmethod
+    def from_checkpoint(cls, output_root: Path) -> 'ClassicDocumentProcessor':
+        """
+        Restore processor from checkpoint if exists, otherwise create new one
+        
+        Args:
+            output_root: Root directory for all outputs
+            
+        Returns:
+            Restored or new processor instance
+        """
+        checkpoint_file = Path(output_root) / "checkpoints" / "processor.pkl"
+        
+        if checkpoint_file.exists():
+            try:
+                with open(checkpoint_file, 'rb') as f:
+                    old_processor = pickle.load(f)
+                
+                # Create a new processor with current __init__ logic
+                processor = cls(output_root)
+                
+                # Copy state from old checkpoint
+                processor.pdf_path = old_processor.pdf_path
+                processor.document = old_processor.document
+                processor.units = old_processor.units
+                processor._current_page_range = getattr(old_processor, '_current_page_range', None)
+                processor._completed_calls = getattr(old_processor, '_completed_calls', set())
+                processor._parts = getattr(old_processor, '_parts', [])
+                
+                console.print(f"[bold cyan]🔄 Checkpoint restored![/bold cyan]")
+                console.print(f"   Checkpoint: {checkpoint_file}")
+                console.print(f"   Document: {len(processor.document.pages) if processor.document else 0} pages")
+                console.print(f"   Units: {len(processor.units)}")
+                console.print(f"   Completed calls: {len(processor._completed_calls)}")
+                if processor._parts:
+                    completed = sum(1 for p in processor._parts if p.completed)
+                    console.print(f"   Parts: {completed}/{len(processor._parts)} completed - {processor._parts}")
+                console.print(f"[yellow]⚠️  Will skip completed calls automatically[/yellow]\n")
+                
+                return processor
+                
+            except Exception as e:
+                console.print(f"[yellow]⚠️  Failed to restore checkpoint: {e}[/yellow]")
+                console.print(f"[yellow]   Creating new processor...[/yellow]\n")
+        
+        # No checkpoint or restore failed, create new
+        return cls(output_root)
 
     @property
     def split_dir(self) -> Path:
@@ -97,30 +184,14 @@ class ClassicDocumentProcessor:
             self._split_dir = self.output_root / "split"
             self._split_dir.mkdir(exist_ok=True)
         return self._split_dir
-
+    
     @property
-    def tables_dir(self) -> Path:
-        """Directory for table processing cache"""
-        if self._tables_dir is None:
-            self._tables_dir = self.output_root / "tables"
-            self._tables_dir.mkdir(exist_ok=True)
-        return self._tables_dir
-
-    @property
-    def metadata_dir(self) -> Path:
-        """Directory for metadata extraction cache"""
-        if self._metadata_dir is None:
-            self._metadata_dir = self.output_root / "metadata"
-            self._metadata_dir.mkdir(exist_ok=True)
-        return self._metadata_dir
-
-    @property
-    def indices_dir(self) -> Path:
-        """Directory for index metadata"""
-        if self._indices_dir is None:
-            self._indices_dir = self.output_root / "indices"
-            self._indices_dir.mkdir(exist_ok=True)
-        return self._indices_dir
+    def cache_dir(self) -> Path:
+        """Directory for document cache"""
+        if self._cache_dir is None:
+            self._cache_dir = self.output_root / "doc"
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
+        return self._cache_dir
     
     @property
     def checkpoint_dir(self) -> Path:
@@ -129,98 +200,78 @@ class ClassicDocumentProcessor:
         checkpoint_path.mkdir(exist_ok=True)
         return checkpoint_path
     
-    def save_checkpoint(self, stage_name: str) -> None:
-        """
-        Save units to checkpoint file
+    def _save_checkpoint(self) -> None:
+        """Save current processor state to checkpoint"""
+        checkpoint_file = self.checkpoint_dir / "processor.pkl"
         
-        Args:
-            stage_name: Name of the pipeline stage (e.g., 'split', 'tables', 'metadata')
-        """
-        if not self.units:
-            console.print(f"[dim]No units to save for checkpoint: {stage_name}[/dim]")
-            return
-        
-        checkpoint_file = self.checkpoint_dir / f"checkpoint_{stage_name}.pkl"
         try:
             with open(checkpoint_file, 'wb') as f:
-                pickle.dump(self.units, f)
-            console.print(f"[green]✓ Checkpoint saved: {checkpoint_file.name} ({len(self.units)} units)[/green]")
+                pickle.dump(self, f)
+            
+            console.print(f"[green]💾 Checkpoint saved: {checkpoint_file}[/green]")
+            
         except Exception as e:
-            console.print(f"[yellow]⚠ Failed to save checkpoint {stage_name}: {e}[/yellow]")
+            console.print(f"[yellow]⚠️  Failed to save checkpoint: {e}[/yellow]")
     
-    def load_checkpoint(self, stage_name: str) -> bool:
+    # ========== Document Processing ==========
+    
+    @staticmethod
+    def _calculate_page_ranges(total_pages: int, pages_per_part: int) -> List[PagePart]:
         """
-        Load units from checkpoint file
+        Calculate page ranges for large file processing
         
         Args:
-            stage_name: Name of the pipeline stage
-        
+            total_pages: Total number of pages in the PDF
+            pages_per_part: Maximum pages per part
+            
         Returns:
-            True if checkpoint loaded successfully, False otherwise
+            List of PagePart objects
+            
+        Example:
+            >>> _calculate_page_ranges(250, 100)
+            [PagePart(1-100) ○, PagePart(101-200) ○, PagePart(201-250) ○]
         """
-        checkpoint_file = self.checkpoint_dir / f"checkpoint_{stage_name}.pkl"
-        if not checkpoint_file.exists():
-            return False
-        
-        try:
-            with open(checkpoint_file, 'rb') as f:
-                self.units = pickle.load(f)
-            console.print(f"[cyan]✓ Checkpoint loaded: {checkpoint_file.name} ({len(self.units)} units)[/cyan]")
-            return True
-        except Exception as e:
-            console.print(f"[yellow]⚠ Failed to load checkpoint {stage_name}: {e}[/yellow]")
-            return False
+        parts = []
+        start = 1
+        while start <= total_pages:
+            end = min(start + pages_per_part - 1, total_pages)
+            parts.append(PagePart(start_page=start, end_page=end))
+            start = end + 1
+        return parts
 
-    # ========== Document Processing ==========
-
-    async def read_document(
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_fixed(10),
+        retry=retry_if_exception_type((TimeoutError, Exception)),
+        reraise=True
+    )
+    async def _read_single_part(
         self,
         pdf_path: Path,
-        use_gpu: bool = True,
-        num_threads: int = 8,
-        page_range: Optional[tuple] = None  # (start, end) 1-based inclusive
+        page_range: Optional[tuple] = None
     ) -> PDF:
         """
-        Read a single PDF document
-
+        Read a single PDF part with MinerU + HeadingCorrection (with automatic retry)
+        
         Args:
             pdf_path: Path to PDF file
-            use_gpu: Enable GPU acceleration for Docling
-            num_threads: Number of threads for parsing
-            page_range: Optional page range tuple (start, end) 1-based inclusive.
-                        If provided, only reads the specified page range.
-                        Example: (1, 100) reads pages 1-100.
-
+            page_range: Optional page range tuple (start, end) 1-based inclusive
+            
         Returns:
             PDF document object
             
         Note:
-            When processing large files in chunks:
-            1. Each chunk is read separately with page_range
-            2. HeadingCorrection is applied to each chunk
-            3. Chunks are merged using PDF.__add__()
-            4. The merged document maintains consistent doc_id
+            - Automatically retries up to 3 times on TimeoutError
+            - Waits 10 seconds between retries
+            - This is a private method called by read_document()
         """
-        self.pdf_path = Path(pdf_path)
-        if not self.pdf_path.exists():
-            raise FileNotFoundError(f"PDF file not found: {self.pdf_path}")
-
-        # Store page range for later use (e.g., process_tables)
-        self._current_page_range = page_range
-
-        # Parse PDF
+        # Parse PDF with MinerU
         range_str = f" (pages {page_range[0]}-{page_range[1]})" if page_range else ""
-        console.print(f"📄 Parsing PDF{range_str}: {self.pdf_path.name}")
+        console.print(f"📄 Parsing PDF with MinerU{range_str}: {pdf_path.name}")
 
-        # Configure Docling
-        pdf_options = PdfPipelineOptions()
-        pdf_options.accelerator_options = AcceleratorOptions(
-            num_threads=num_threads,
-            device=AcceleratorDevice.CUDA if use_gpu else AcceleratorDevice.CPU
-        )
-
-        reader = DoclingReader(pdf_pipeline_options=pdf_options)
-        doc = reader.read(str(self.pdf_path), page_range=page_range)
+        from zag.readers import MinerUReader
+        reader = MinerUReader()
+        doc = reader.read(str(pdf_path), page_range=page_range)
 
         # Apply heading correction
         console.print("  🔧 Correcting headings...")
@@ -240,8 +291,98 @@ class ClassicDocumentProcessor:
             console.print(
                 f"  ✅ Table items: {doc.metadata.custom.get('table_items_count', 0)}")
 
-        self.document = doc
         return doc
+    
+    async def read_document(
+        self,
+        pdf_path: Path,
+        max_pages_per_part: int = 100
+    ) -> PDF:
+        """
+        Read PDF document with automatic chunking for large files
+        
+        Automatically splits large files into parts, reads each part with retry,
+        applies heading correction, and merges. Supports checkpoint recovery at
+        part level for maximum resilience.
+        
+        Args:
+            pdf_path: Path to PDF file
+            max_pages_per_part: Maximum pages per part (default: 100)
+                               Files with more pages will be split automatically
+        
+        Returns:
+            PDF document object
+            
+        Note:
+            - Small files (≤max_pages_per_part): Read directly
+            - Large files: Split into parts, read each with retry, then merge
+            - Part-level checkpoint: If part 3/5 fails, restarts from part 3
+            - Each part gets HeadingCorrection before merging
+            - Final merged document uses consistent doc_id
+            - GPU memory: Single-threaded to avoid OOM (one part at a time)
+        """
+        self.pdf_path = Path(pdf_path)
+        if not self.pdf_path.exists():
+            raise FileNotFoundError(f"PDF file not found: {self.pdf_path}")
+        
+        # Get total pages
+        from pypdf import PdfReader
+        reader = PdfReader(str(self.pdf_path))
+        total_pages = len(reader.pages)
+        console.print(f"📖 Total pages: {total_pages}")
+        
+        # Initialize parts if not already exist (first run)
+        if not self._parts:
+            self._parts = self._calculate_page_ranges(total_pages, max_pages_per_part)
+        
+        console.print(f"✂️  Will read in {len(self._parts)} parts:")
+        for i, part in enumerate(self._parts):
+            console.print(f"     {i}: {part}")
+        
+        # Process each part (skip already completed ones)
+        for part in self._parts:
+            if part.completed:
+                console.print(f"[dim]⏭️  Part {part.start_page}-{part.end_page} already completed, skipping[/dim]")
+                continue
+            
+            console.print(f"\n[cyan]--- Reading part {part.start_page}-{part.end_page} ---[/cyan]")
+            part_doc = await self._read_single_part(self.pdf_path, (part.start_page, part.end_page))
+            
+            # Store the processed part document
+            part.completed = True
+            part.part_doc = part_doc
+            self._save_checkpoint()
+        
+        # All parts processed, now merge them
+        console.print(f"\n[cyan]🔗 Merging all {len(self._parts)} parts...[/cyan]")
+        merged_doc = None
+        for part in self._parts:
+            if part.part_doc is None:
+                raise RuntimeError(f"Part {part.start_page}-{part.end_page} has no document!")
+            
+            if merged_doc is None:
+                merged_doc = part.part_doc
+            else:
+                merged_doc = merged_doc + part.part_doc
+            console.print(f"  ✅ Merged part {part.start_page}-{part.end_page}: {len(merged_doc.pages)} pages total")
+        
+        # All parts done
+        console.print(f"\n[bold green]✅ All {len(self._parts)} parts completed and merged![/bold green]")
+        console.print(f"   Final document: {len(merged_doc.pages)} pages, {len(merged_doc.content):,} characters")
+        
+        self.document = merged_doc
+        self._parts = []  # Clear parts (no longer needed)
+        self._save_checkpoint()
+        
+        # Dump to cache for reuse (best effort, failure is acceptable)
+        try:
+            console.print(f"\n💾 Caching document...")
+            archive_path = self.document.dump(self.cache_dir)
+            console.print(f"   ✅ Cached: {archive_path}")
+        except Exception as e:
+            console.print(f"   ⚠️  Cache failed (non-critical): {e}", style="yellow")
+        
+        return self.document
     
     def set_document(self, document: PDF) -> None:
         """
@@ -315,6 +456,7 @@ class ClassicDocumentProcessor:
 
         console.print(f"\n✅ Custom metadata set successfully")
 
+    @checkpoint_cache
     async def split_document(
         self,
         max_chunk_tokens: int = 1200,
@@ -339,6 +481,7 @@ class ClassicDocumentProcessor:
 
         Note:
             Pipeline: MarkdownHeaderSplitter | TextSplitter | TableSplitter | RecursiveMergingSplitter
+            Automatically skips if already completed (checkpoint recovery).
         """
         if self.document is None:
             raise ValueError("No document loaded. Call read_document() first.")
@@ -400,9 +543,6 @@ class ClassicDocumentProcessor:
 
         self.units = units
         
-        # Save checkpoint
-        self.save_checkpoint('split')
-        
         return units
 
     def _export_split_visualization(
@@ -456,6 +596,7 @@ class ClassicDocumentProcessor:
 
         console.print(f"\n💾 Visualization exported: {viz_file.name}")
 
+    @checkpoint_cache
     async def process_tables(
         self,
         llm_uri: str,
@@ -484,6 +625,7 @@ class ClassicDocumentProcessor:
             - Stage 2: Parses new TableUnits from TextUnits
             - Stage 3: Enriches TableUnits with caption and embedding_content
             - Final output: merged list of TextUnits + TableUnits
+            - Automatically skips if already completed (checkpoint recovery).
         """
         if not self.units:
             raise ValueError(
@@ -507,62 +649,18 @@ class ClassicDocumentProcessor:
         console.print(
             f"  ✅ Units with embedding_content: {units_with_embedding}")
         
-        # ========== Stage 2: Parse TableUnits from PDF (re-read with MinerU) ==========
-        console.print(f"\n  Stage 2: Parsing tables with MinerU (high-quality table extraction)...")
+        # ========== Stage 2: Parse TableUnits from existing document ==========
+        console.print(f"\n  Stage 2: Parsing tables from existing document...")
         
-        # Re-read PDF with MinerU for better table quality
-        from zag.readers import MinerUReader
         from zag.parsers import TableParser
         from zag.schemas import UnitMetadata
-        from ..config import MAX_PAGES_PER_PART
         
-        # Get full page range from merged document
-        if self.document and self.document.pages:
-            page_numbers = [p.page_number for p in self.document.pages]
-            total_pages = len(page_numbers)
-            start_page = min(page_numbers)
-            end_page = max(page_numbers)
-        else:
-            # Fallback to current page range
-            if self._current_page_range:
-                start_page, end_page = self._current_page_range
-                total_pages = end_page - start_page + 1
-            else:
-                raise ValueError("No page range information available")
-        
-        # Calculate page ranges for chunked reading (same logic as classic.py)
-        if total_pages > MAX_PAGES_PER_PART:
-            page_ranges = []
-            s = start_page
-            while s <= end_page:
-                e = min(s + MAX_PAGES_PER_PART - 1, end_page)
-                page_ranges.append((s, e))
-                s = e + 1
-            console.print(f"  📄 Large document, reading in {len(page_ranges)} parts")
-        else:
-            page_ranges = [(start_page, end_page)]
-        
-        # Read in parts and collect all tables
-        mineru_reader = MinerUReader()
-        merged_pdf: Optional[PDF] = None
-        
-        for part_idx, (part_start, part_end) in enumerate(page_ranges, 1):
-            console.print(f"  ⏳ Reading part {part_idx}/{len(page_ranges)}: pages {part_start}-{part_end}...")
-            pdf_mineru = mineru_reader.read(self.pdf_path, page_range=(part_start, part_end))
-            
-            # Merge PDFs
-            if merged_pdf is None:
-                merged_pdf = pdf_mineru
-            else:
-                merged_pdf = merged_pdf + pdf_mineru
-        
-        # Parse tables from merged PDF (so span is relative to merged content)
-        console.print(f"  ⏳ Parsing tables from merged content...")
+        # Use existing document (already read by read_document)
         parser = TableParser()
         
         # Prepare unit metadata with business context (same as TextUnit)
         unit_metadata = UnitMetadata(
-            document=merged_pdf.metadata.model_dump_deep()
+            document=self.document.metadata.model_dump_deep()
         )
         
         # Inject business custom metadata from original document (same as PDF.split() does for TextUnit)
@@ -570,9 +668,9 @@ class ClassicDocumentProcessor:
             unit_metadata.custom.update(self.document.metadata.custom)
         
         table_units = parser.parse(
-            text=merged_pdf.content,
+            text=self.document.content,
             metadata=unit_metadata,
-            doc_id=merged_pdf.doc_id,
+            doc_id=self.document.doc_id,
         )
         console.print(f"  ✅ Total tables parsed: {len(table_units)}")
         
@@ -581,8 +679,8 @@ class ClassicDocumentProcessor:
             from zag.utils.page_inference import infer_page_numbers
             infer_page_numbers(
                 table_units,
-                merged_pdf.pages,
-                full_content=merged_pdf.content
+                self.document.pages,
+                full_content=self.document.content
             )
             tables_with_pages = sum(1 for t in table_units if t.metadata.page_numbers)
             console.print(f"  📄 Tables with page_numbers: {tables_with_pages}/{len(table_units)}")
@@ -625,11 +723,9 @@ class ClassicDocumentProcessor:
         self.units = self.units + table_units
         console.print(f"\n  📦 Total units: {original_count} TextUnit + {len(table_units)} TableUnit = {len(self.units)}")
         
-        # Save checkpoint
-        self.save_checkpoint('tables')
-
         return self.units
 
+    @checkpoint_cache
     async def extract_metadata(
         self,
         llm_uri: str,
@@ -652,10 +748,20 @@ class ClassicDocumentProcessor:
 
         Note:
             - Updates unit.metadata.keywords
+            - For large files (>500 pages), skips extraction to save time
+            - Automatically skips if already completed (checkpoint recovery).
         """
         if not self.units:
             raise ValueError(
                 "No units available. Call split_document() first.")
+
+        # Skip keyword extraction for large files
+        total_pages = len(self.document.pages) if self.document else 0
+        if total_pages > 500:
+            console.print(f"\n⚠️  Large file ({total_pages} pages), skipping keyword extraction")
+            console.print(f"  💡 Keywords can be added later via separate task")
+            # Early return (decorator will still mark as completed)
+            return self.units
 
         # Extract keywords
         console.print(f"\n🏷️  Extracting keywords with LLM: {llm_uri}")
@@ -675,13 +781,17 @@ class ClassicDocumentProcessor:
             keywords = unit.metadata.keywords or []
             console.print(f"    {i}. {keywords}")
         
-        # Save checkpoint
-        self.save_checkpoint('metadata')
-
         return self.units
 
     # ========== Indexing ==========
 
+    @retry(
+        stop=stop_after_attempt(10),
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        retry=retry_if_exception_type(Exception),
+        reraise=True
+    )
+    @checkpoint_cache
     async def build_vector_index(
         self,
         embedding_uri: str,
@@ -692,7 +802,7 @@ class ClassicDocumentProcessor:
         api_key: Optional[str] = None
     ) -> VectorIndexer:
         """
-        Build vector index with Qdrant
+        Build vector index with Qdrant (with automatic retry)
 
         Args:
             embedding_uri: Embedding model URI (e.g., "ollama/jina-embeddings-v2-base-en:latest")
@@ -707,6 +817,11 @@ class ClassicDocumentProcessor:
 
         Raises:
             ValueError: If units not available
+            
+        Note:
+            - Retries up to 10 times with exponential backoff (2s, 4s, 8s, ..., max 60s)
+            - Must succeed, will keep retrying until success
+            - Automatically skips if already completed (checkpoint recovery).
         """
         if not self.units:
             raise ValueError(
@@ -724,6 +839,7 @@ class ClassicDocumentProcessor:
             port=qdrant_port,
             grpc_port=qdrant_grpc_port,
             prefer_grpc=True,
+            timeout=300,  # 5 minutes timeout for large batch operations
             collection_name=collection_name,
             embedder=embedder
         )
@@ -744,17 +860,17 @@ class ClassicDocumentProcessor:
         console.print(
             f"  ✅ Vector index built: {vector_indexer.count()} units")
 
-        self.vector_indexer = vector_indexer
         return vector_indexer
 
+    @checkpoint_cache
     async def build_fulltext_index(
         self,
         meilisearch_url: str,
         index_name: str = "mortgage_guidelines",
         primary_key: str = "unit_id"
-    ) -> FullTextIndexer:
+    ) -> Optional[FullTextIndexer]:
         """
-        Build fulltext index with Meilisearch
+        Build fulltext index with Meilisearch (best effort, failure is acceptable)
 
         Args:
             meilisearch_url: Meilisearch server URL
@@ -762,10 +878,16 @@ class ClassicDocumentProcessor:
             primary_key: Primary key field
 
         Returns:
-            FullTextIndexer instance
+            FullTextIndexer instance if successful, None if failed
 
         Raises:
             ValueError: If units not available
+            
+        Note:
+            - This is a best-effort operation
+            - If fails, logs warning and returns None
+            - Does not block the pipeline
+            - Automatically skips if already completed (checkpoint recovery).
         """
         if not self.units:
             raise ValueError(
@@ -775,25 +897,31 @@ class ClassicDocumentProcessor:
         console.print(f"  Meilisearch: {meilisearch_url}")
         console.print(f"  Index: {index_name}")
 
-        fulltext_indexer = FullTextIndexer(
-            url=meilisearch_url,
-            index_name=index_name,
-            primary_key=primary_key
-        )
+        try:
+            fulltext_indexer = FullTextIndexer(
+                url=meilisearch_url,
+                index_name=index_name,
+                primary_key=primary_key
+            )
 
-        # Note: Meilisearch uses upsert by default, so we don't need to delete old data
-        # The units with same unit_id will be automatically replaced
+            # Note: Meilisearch uses upsert by default, so we don't need to delete old data
+            # The units with same unit_id will be automatically replaced
 
-        fulltext_indexer.configure_settings(
-            searchable_attributes=["content", "context_path"],
-            filterable_attributes=["unit_type", "source_doc_id"],
-            sortable_attributes=["created_at"],
-        )
+            fulltext_indexer.configure_settings(
+                searchable_attributes=["content", "context_path"],
+                filterable_attributes=["unit_type", "source_doc_id"],
+                sortable_attributes=["created_at"],
+            )
 
-        fulltext_indexer.add(self.units)
+            fulltext_indexer.add(self.units)
 
-        console.print(
-            f"  ✅ Fulltext index built: {fulltext_indexer.count()} units")
+            console.print(
+                f"  ✅ Fulltext index built: {fulltext_indexer.count()} units")
 
-        self.fulltext_indexer = fulltext_indexer
-        return fulltext_indexer
+            return fulltext_indexer
+            
+        except Exception as e:
+            console.print(f"  ⚠️  Fulltext index failed (non-critical): {e}", style="yellow")
+            console.print(f"  💡 You can rebuild fulltext index later", style="dim")
+            # Return None (decorator will still mark as completed)
+            return None

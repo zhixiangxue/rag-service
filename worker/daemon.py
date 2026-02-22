@@ -83,6 +83,7 @@ class RagWorker:
         self.api_base_url = config.API_BASE_URL
         self.poll_interval = config.WORKER_POLL_INTERVAL
         self.gpu_memory_threshold = 0.5  # 50% threshold
+        self.max_retries = 3  # Maximum retry attempts per task
         self.running = False
         self.shutdown_requested = False  # Graceful shutdown flag
         self.force_shutdown = False  # Force shutdown flag
@@ -139,65 +140,102 @@ class RagWorker:
                 return data["data"]
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 404:
-                    # No pending tasks
+                    # No pending tasks (normal, not an error)
                     return None
                 else:
-                    # Unexpected error
-                    console.print(f"[red]Failed to claim task: {e.response.status_code}[/red]")
+                    # Real error (network issue, server error, etc.)
+                    console.print(f"[red]⚠️  API error {e.response.status_code}: {e.response.text[:100]}[/red]")
                     return None
+            except httpx.RequestError as e:
+                # Network error (connection refused, timeout, etc.)
+                console.print(f"[red]⚠️  Network error: {type(e).__name__} - {str(e)[:100]}[/red]")
+                return None
             except Exception as e:
-                console.print(f"[red]Failed to claim task: {e}[/red]")
+                console.print(f"[red]⚠️  Unexpected error: {type(e).__name__} - {str(e)[:100]}[/red]")
                 return None
     
     def process_task_in_subprocess(self, task: Dict[str, Any]) -> int:
-        """Process a task in an isolated subprocess.
+        """Process a task in an isolated subprocess with automatic retry.
+        
+        If the subprocess fails, automatically retries on the same machine
+        to leverage checkpoint recovery. This ensures that partial progress
+        (e.g., completed parts in large file processing) is preserved.
         
         Args:
             task: Task data dictionary
             
         Returns:
-            Exit code from subprocess (0 = success, non-zero = failure)
+            Exit code from subprocess (0 = success, non-zero = failure after all retries)
         """
         task_id = task["task_id"]
-        console.print(f"\n[cyan]Spawning subprocess for task {task_id}...[/cyan]")
         
-        # Serialize task to JSON
-        task_json = json.dumps(task)
-        
-        # Get Python interpreter path (use same venv)
-        python_executable = sys.executable
-        
-        # Build command to run task_processor
-        cmd = [
-            python_executable,
-            "-m",
-            "worker.task_processor",
-            task_json
-        ]
-        
-        try:
-            # Start subprocess with Popen (non-blocking, allows tracking)
-            self.current_subprocess = subprocess.Popen(
-                cmd,
-                stdout=sys.stdout,
-                stderr=sys.stderr
-            )
-            
-            # Wait for subprocess to complete
-            exit_code = self.current_subprocess.wait()
-            self.current_subprocess = None  # Clear reference
-            
-            if exit_code == 0:
-                console.print(f"[green]Subprocess completed successfully[/green]")
+        for attempt in range(1, self.max_retries + 1):
+            if attempt > 1:
+                console.print(f"\n[yellow]🔄 Retry attempt {attempt}/{self.max_retries} for task {task_id}[/yellow]")
+                console.print(f"[dim]Checkpoint recovery will restore previous progress...[/dim]")
             else:
-                console.print(f"[red]Subprocess failed with exit code {exit_code}[/red]")
+                console.print(f"\n[cyan]Spawning subprocess for task {task_id}...[/cyan]")
             
-            return exit_code
+            # Serialize task to JSON
+            task_json = json.dumps(task)
             
-        except Exception as e:
-            console.print(f"[red]Failed to spawn subprocess: {e}[/red]")
-            self.current_subprocess = None
-            return 1
+            # Get Python interpreter path (use same venv)
+            python_executable = sys.executable
+            
+            # Build command to run task_processor
+            cmd = [
+                python_executable,
+                "-m",
+                "worker.task_processor",
+                task_json
+            ]
+            
+            try:
+                # Start subprocess with Popen (non-blocking, allows tracking)
+                self.current_subprocess = subprocess.Popen(
+                    cmd,
+                    stdout=sys.stdout,
+                    stderr=sys.stderr
+                )
+                
+                # Wait for subprocess to complete
+                exit_code = self.current_subprocess.wait()
+                self.current_subprocess = None  # Clear reference
+                
+                if exit_code == 0:
+                    console.print(f"[green]Subprocess completed successfully[/green]")
+                    return 0
+                elif exit_code == 2:
+                    # Task was cancelled by user, don't retry
+                    console.print(f"[yellow]Task cancelled by user, skipping retry[/yellow]")
+                    return 2
+                else:
+                    # Task failed
+                    console.print(f"[red]Subprocess failed with exit code {exit_code}[/red]")
+                    
+                    if attempt < self.max_retries:
+                        console.print(f"[yellow]Will retry in 5 seconds (attempt {attempt}/{self.max_retries})...[/yellow]")
+                        import time
+                        time.sleep(5)  # Wait before retry
+                        # Continue to next attempt
+                    else:
+                        console.print(f"[red]All {self.max_retries} retry attempts exhausted, task failed[/red]")
+                        return exit_code
+                
+            except Exception as e:
+                console.print(f"[red]Failed to spawn subprocess: {e}[/red]")
+                self.current_subprocess = None
+                
+                if attempt < self.max_retries:
+                    console.print(f"[yellow]Will retry in 5 seconds (attempt {attempt}/{self.max_retries})...[/yellow]")
+                    import time
+                    time.sleep(5)
+                else:
+                    console.print(f"[red]All {self.max_retries} retry attempts exhausted[/red]")
+                    return 1
+        
+        # Should never reach here
+        return 1
     
     async def run(self):
         """Main worker loop."""
@@ -222,7 +260,8 @@ class RagWorker:
             "[bold cyan]RAG Worker Started (Process Isolation Mode)[/bold cyan]\n"
             f"API: {self.api_base_url}\n"
             f"Poll interval: {self.poll_interval}s\n"
-            f"Mode: Subprocess isolation\n"
+            f"Max retries: {self.max_retries}\n"
+            f"Mode: Subprocess isolation with checkpoint recovery\n"
             f"Shutdown: Ctrl+C once = graceful, twice = force",
             border_style="cyan"
         ))

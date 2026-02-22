@@ -2,7 +2,7 @@
 import time
 from pathlib import Path
 from rich.console import Console
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional
 
 from ..processors.classic_processor import ClassicDocumentProcessor
 from ..constants import ProcessingMode
@@ -15,30 +15,9 @@ from ..config import (
     MAX_CHUNK_TOKENS, TABLE_MAX_TOKENS, TARGET_TOKEN_SIZE,
     NUM_KEYWORDS, MAX_PAGES_PER_PART
 )
-from zag.schemas.pdf import PDF
 from zag.utils.hash import calculate_file_hash
 
 console = Console()
-
-
-def calculate_page_ranges(total_pages: int, pages_per_part: int) -> List[Tuple[int, int]]:
-    """
-    Calculate page ranges for large file processing.
-    
-    Args:
-        total_pages: Total number of pages in the PDF
-        pages_per_part: Maximum pages per part
-        
-    Returns:
-        List of (start, end) tuples (1-based, inclusive)
-    """
-    ranges = []
-    start = 1
-    while start <= total_pages:
-        end = min(start + pages_per_part - 1, total_pages)
-        ranges.append((start, end))
-        start = end + 1
-    return ranges
 
 
 async def index_classic(
@@ -53,11 +32,8 @@ async def index_classic(
     """
     Classic RAG indexing: split document into chunks and index.
     
-    For large files, uses page-range-based reading instead of physical splitting:
-    1. Read file in page ranges (e.g., 1-100, 101-200, ...)
-    2. Apply HeadingCorrection to each range
-    3. Merge all ranges into a single PDF document
-    4. Process the merged document (split, tables, metadata, indexing)
+    The processor now handles large file splitting internally with part-level
+    checkpoint recovery. This function just orchestrates the high-level pipeline.
     
     Args:
         file_path: Path to the PDF file
@@ -89,83 +65,46 @@ async def index_classic(
             except Exception as e:
                 console.print(f"[yellow]⚠ Progress callback error: {e}[/yellow]")
     
-    # Step 1: Calculate source hash and page count (10-15%)
+    # Step 1: Calculate source hash (10%)
     await report_progress(10)
-    
     console.print(f"\n[black on cyan] Step 1/9: Analyzing document [/black on cyan]")
     
     source_hash = calculate_file_hash(file_path)
     console.print(f"   🔑 Source hash: {source_hash}")
     
-    # Get page count
-    from pypdf import PdfReader
-    try:
-        reader = PdfReader(file_path)
-        total_pages = len(reader.pages)
-        console.print(f"   📖 Total pages: {total_pages}")
-    except Exception as e:
-        raise Exception(f"Failed to read PDF: {e}")
-    
-    # Calculate page ranges
-    if total_pages > MAX_PAGES_PER_PART:
-        page_ranges = calculate_page_ranges(total_pages, MAX_PAGES_PER_PART)
-        console.print(f"   ✂️  Large file, will read in {len(page_ranges)} parts: {page_ranges}")
-    else:
-        page_ranges = [(1, total_pages)]
-        console.print(f"   ✅ Small file, reading all pages at once")
-    
     # Inject mode into custom_metadata
     metadata_with_mode = {**(custom_metadata or {}), "mode": ProcessingMode.CLASSIC}
     
     # Create output directory using source hash
-    output_dir = workspace_dir / "output" / source_hash
+    output_dir = workspace_dir / source_hash
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Create processor
-    processor = ClassicDocumentProcessor(output_root=output_dir)
+    # Create processor (will auto-restore checkpoint if exists)
+    processor = ClassicDocumentProcessor.from_checkpoint(output_root=output_dir)
     
-    # Step 2: Read document in parts and merge (15-25%)
+    # Step 2: Read document (15-25%)
+    # Processor handles large file splitting + part-level checkpoint internally
     console.print(f"\n[black on cyan] Step 2/9: Reading document [/black on cyan]")
-    merged_doc: Optional[PDF] = None
+    await report_progress(15)
     
-    for part_idx, (page_start, page_end) in enumerate(page_ranges, 1):
-        part_progress = 15 + int((part_idx - 0.5) / len(page_ranges) * 10)
-        await report_progress(part_progress)
-        
-        console.print(f"\n[cyan]--- Reading part {part_idx}/{len(page_ranges)}: pages {page_start}-{page_end} ---[/cyan]")
-        
-        # Read this page range
-        doc = await processor.read_document(
-            pdf_path=file_path,
-            use_gpu=USE_GPU,
-            num_threads=NUM_THREADS,
-            page_range=(page_start, page_end)
-        )
-        
-        # Merge documents
-        if merged_doc is None:
-            merged_doc = doc
-        else:
-            console.print(f"  🔗 Merging with previous document...")
-            merged_doc = merged_doc + doc
-            console.print(f"  ✅ Merged: {len(merged_doc.pages)} pages total")
+    doc = await processor.read_document(
+        pdf_path=file_path,
+        max_pages_per_part=MAX_PAGES_PER_PART
+    )
     
-    # Step 3: Set merged document and update doc_id (25%)
     await report_progress(25)
     
-    # Update doc_id to use source_hash (consistent across all parts)
-    merged_doc.doc_id = source_hash
-    merged_doc.metadata.md5 = source_hash
-    processor.set_document(merged_doc)
-    
+    # Step 3: Update doc_id (30%)
     console.print(f"\n[black on cyan] Step 3/9: Document ready [/black on cyan]")
-    console.print(f"   Pages: {len(merged_doc.pages)}, Characters: {len(merged_doc.content):,}")
-    console.print(f"   doc_id: {merged_doc.doc_id}")
     
-    # Dump to cache for reuse
-    cache_dir = Path.home() / ".zag" / "cache" / "readers" / "docling"
-    archive_path = merged_doc.dump(cache_dir)
-    console.print(f"   💾 Cached: {archive_path}")
+    # Update doc_id to use source_hash (consistent)
+    doc.doc_id = source_hash
+    doc.metadata.md5 = source_hash
+    
+    console.print(f"   Pages: {len(doc.pages)}, Characters: {len(doc.content):,}")
+    console.print(f"   doc_id: {doc.doc_id}")
+    
+    await report_progress(30)
     
     # Step 4: Inject custom metadata (30%)
     await report_progress(30)
@@ -240,13 +179,11 @@ async def index_classic(
     
     # Summary
     console.print(f"\n[bold green]📊 Processing Summary[/bold green]")
-    console.print(f"  Parts: {len(page_ranges)}")
     console.print(f"  Total units: {len(processor.units)}")
     console.print(f"  Time: {elapsed:.2f}s\n")
     
     return {
         "unit_count": len(processor.units),
-        "parts": len(page_ranges),
         "elapsed_seconds": elapsed,
         "source_hash": source_hash
     }
