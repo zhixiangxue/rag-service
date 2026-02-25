@@ -266,7 +266,7 @@ async def query_tree_simple(dataset_id: str, request: TreeQueryRequest):
         from zag.retrievers.tree import SimpleRetriever
         retriever = SimpleRetriever(
             vector_store=vector_store,
-            llm_uri=config.LLM_URI_TREE_RETRIEVAL,
+            llm_uri=f"{config.LLM_PROVIDER}/{config.LLM_MODEL}",
             api_key=config.OPENAI_API_KEY,
             max_depth=request.max_depth
         )
@@ -391,7 +391,7 @@ async def query_tree_skeleton(dataset_id: str, request: TreeQueryRequest):
         # Initialize SkeletonRetriever
         from zag.retrievers.tree import SkeletonRetriever
         retriever = SkeletonRetriever(
-            llm_uri=config.LLM_URI_TREE_RETRIEVAL,
+            llm_uri=f"{config.LLM_PROVIDER}/{config.LLM_MODEL}",
             api_key=config.OPENAI_API_KEY,
             verbose=False,
             vector_store=vector_store
