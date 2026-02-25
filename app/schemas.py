@@ -1,5 +1,5 @@
 """Pydantic schemas for API request/response."""
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional, Dict, Any, List, TypeVar, Generic
 from datetime import datetime
 from enum import Enum
@@ -186,13 +186,21 @@ class QueryResponse(BaseModel):
 class TreeQueryRequest(BaseModel):
     """Tree query request for tree-based retrieval."""
     query: str
-    unit_id: str
+    unit_id: Optional[str] = None
+    doc_id: Optional[str] = None
     # SimpleRetriever params
     max_depth: int = Field(default=5, ge=1, le=10)
     # MCTSRetriever params
     preset: str = Field(default="balanced", pattern="^(fast|balanced|accurate|explore)$")
     # SkeletonRetriever params: retrieval mode (fast=summary, accurate=fulltext)
     mode: str = Field(default="fast", pattern="^(fast|accurate)$")
+
+    @model_validator(mode='after')
+    def validate_identifiers(self) -> 'TreeQueryRequest':
+        """Require at least one of unit_id or doc_id."""
+        if not self.unit_id and not self.doc_id:
+            raise ValueError("Either unit_id or doc_id must be provided")
+        return self
 
 
 # ============ Health ============

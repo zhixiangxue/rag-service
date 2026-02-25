@@ -295,7 +295,7 @@ async def index_lod(
             doc_id=doc_id,
             unit_type=UnitType.TEXT,
             source_file=file_path.name,
-            custom_metadata=metadata_with_mode
+            custom=metadata_with_mode
         ),
         views=[
             ContentView(level=LODLevel.LOW, content=lod_low, token_count=lod_low_tokens),

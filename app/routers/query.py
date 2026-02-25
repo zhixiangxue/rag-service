@@ -1,6 +1,6 @@
 """Query API endpoints."""
 from fastapi import APIRouter, HTTPException
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 from cachetools import cached, TTLCache
 from cachetools.keys import hashkey
 import threading
@@ -189,6 +189,51 @@ async def query_fusion(dataset_id: str, request: QueryRequest):
     raise HTTPException(status_code=501, detail="Fusion search not implemented yet")
 
 
+async def resolve_lod_ids(
+    request: "TreeQueryRequest",
+    vector_store
+) -> Dict[str, Optional[str]]:
+    """Resolve LOD unit_id and doc_id from request parameters.
+
+    Returns {"unit_id": ..., "doc_id": ...}.
+
+    Four cases:
+    1. unit_id only  -> fetch unit to get real doc_id
+    2. doc_id only   -> fetch LOD unit via doc_id + mode filter
+    3. both provided -> get by unit_id, validate doc_id matches
+    4. neither       -> rejected by schema validator before reaching here
+    """
+    from ..schemas import ProcessingMode
+
+    if request.unit_id and not request.doc_id:
+        # Case 1: unit_id only - fetch unit to get doc_id
+        units = vector_store.get([request.unit_id])
+        if not units:
+            raise ValueError(f"Unit not found: {request.unit_id}")
+        return {"unit_id": request.unit_id, "doc_id": units[0].doc_id}
+
+    if request.doc_id and not request.unit_id:
+        # Case 2: doc_id only - targeted fetch, O(1)
+        units = await vector_store.afetch({
+            "doc_id": request.doc_id,
+            "metadata.custom.mode": ProcessingMode.LOD
+        })
+        if not units:
+            raise ValueError(f"No LOD unit found for doc_id: {request.doc_id}")
+        return {"unit_id": units[0].unit_id, "doc_id": request.doc_id}
+
+    # Case 3: both provided - use unit_id but validate doc_id consistency
+    units = vector_store.get([request.unit_id])
+    if not units:
+        raise ValueError(f"Unit not found: {request.unit_id}")
+    if units[0].doc_id != request.doc_id:
+        raise ValueError(
+            f"unit_id '{request.unit_id}' belongs to doc_id '{units[0].doc_id}', "
+            f"not '{request.doc_id}'"
+        )
+    return {"unit_id": request.unit_id, "doc_id": request.doc_id}
+
+
 @router.post("/{dataset_id}/query/tree/simple", response_model=ApiResponse[Dict[str, Any]])
 async def query_tree_simple(dataset_id: str, request: TreeQueryRequest):
     """Tree query using SimpleRetriever.
@@ -226,8 +271,13 @@ async def query_tree_simple(dataset_id: str, request: TreeQueryRequest):
             max_depth=request.max_depth
         )
         
+        # Resolve lod_unit_id and doc_id from request (supports unit_id or doc_id)
+        ids = await resolve_lod_ids(request, vector_store)
+        lod_unit_id = ids["unit_id"]
+        doc_id = ids["doc_id"]
+
         # Retrieve (internally fetches unit and parses tree)
-        result = await retriever.retrieve(request.query, request.unit_id)
+        result = await retriever.retrieve(request.query, lod_unit_id)
         
         # Build response
         return ApiResponse(
@@ -236,7 +286,8 @@ async def query_tree_simple(dataset_id: str, request: TreeQueryRequest):
             data={
                 "nodes": [node.model_dump() for node in result.nodes],
                 "path": result.path,
-                "unit_id": request.unit_id
+                "unit_id": lod_unit_id,
+                "doc_id": doc_id
             }
         )
         
@@ -283,8 +334,13 @@ async def query_tree_mcts(dataset_id: str, request: TreeQueryRequest):
             vector_store=vector_store
         )
         
+        # Resolve lod_unit_id and doc_id from request (supports unit_id or doc_id)
+        ids = await resolve_lod_ids(request, vector_store)
+        lod_unit_id = ids["unit_id"]
+        doc_id = ids["doc_id"]
+
         # Retrieve (internally fetches unit and parses tree)
-        result = await retriever.retrieve(request.query, request.unit_id)
+        result = await retriever.retrieve(request.query, lod_unit_id)
         
         # Build response
         return ApiResponse(
@@ -293,7 +349,8 @@ async def query_tree_mcts(dataset_id: str, request: TreeQueryRequest):
             data={
                 "nodes": [node.model_dump() for node in result.nodes],
                 "path": result.path,
-                "unit_id": request.unit_id
+                "unit_id": lod_unit_id,
+                "doc_id": doc_id
             }
         )
         
@@ -340,12 +397,17 @@ async def query_tree_skeleton(dataset_id: str, request: TreeQueryRequest):
             vector_store=vector_store
         )
 
+        # Resolve lod_unit_id and doc_id from request (supports unit_id or doc_id)
+        ids = await resolve_lod_ids(request, vector_store)
+        lod_unit_id = ids["unit_id"]
+        doc_id = ids["doc_id"]
+
         # Retrieve (internally fetches unit and parses tree)
         # mode: "fast" -> use summary, "accurate" -> use full text
         use_full_text = request.mode == "accurate"
         result = await retriever.retrieve(
             request.query,
-            request.unit_id,
+            lod_unit_id,
             use_full_text=use_full_text
         )
         
@@ -356,7 +418,8 @@ async def query_tree_skeleton(dataset_id: str, request: TreeQueryRequest):
             data={
                 "nodes": [node.model_dump() for node in result.nodes],
                 "path": result.path,
-                "unit_id": request.unit_id
+                "unit_id": lod_unit_id,
+                "doc_id": doc_id
             }
         )
         
