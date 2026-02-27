@@ -10,7 +10,9 @@ from ..database import get_connection
 from .. import config
 from zag.embedders import Embedder
 from zag.storages.vector import QdrantVectorStore
-from zag.retrievers.basic import VectorRetriever
+from zag.retrievers.basic import VectorRetriever, FullTextRetriever
+from zag.postprocessors import Reranker
+from zag.schemas import LODLevel
 
 router = APIRouter(prefix="/datasets", tags=["query"])
 
@@ -61,6 +63,46 @@ def clear_dataset_cache(dataset_id: str):
         _dataset_cache.pop(cache_key, None)
 
 
+def _rewrite_for_fulltext(query: str) -> str:
+    """Rewrite natural language query to keyword form for BM25 fulltext search.
+
+    Falls back to the original query on any error to avoid blocking the pipeline.
+    """
+    try:
+        import chak
+        conv = chak.Conversation("openai/gpt-4o-mini", api_key=config.OPENAI_API_KEY)
+        prompt = (
+            "Extract the most important search keywords from the following question "
+            "for a full-text search engine (BM25). "
+            "Output only the keywords separated by spaces, no punctuation, no explanation.\n\n"
+            f"Question: {query}"
+        )
+        response = conv.send(prompt)
+        keywords = response.content.strip()
+        return keywords if keywords else query
+    except Exception as e:
+        print(f"[WARN] fulltext query rewrite failed, using original: {e}")
+        return query
+
+
+def _rerank_units(query: str, units: list[Any], top_k: Optional[int] = None) -> list[Any]:
+    """Apply reranker to units.
+
+    Uses RERANKER_URI from app config. On any error, returns the original
+    units to avoid breaking the query pipeline.
+    """
+    if not units:
+        return []
+
+    try:
+        reranker = Reranker(config.RERANKER_URI, api_key=config.COHERE_API_KEY)
+        return reranker.rerank(query, units, top_k=top_k)
+    except Exception as e:
+        # Best-effort reranking: log and fall back to original units
+        print(f"[WARN] Reranking failed, using original units: {e}")
+        return units
+
+
 async def _perform_vector_query(dataset_id: str, request: QueryRequest) -> ApiResponse[List[UnitResponse]]:
     """Internal function to perform vector search.
     
@@ -92,30 +134,33 @@ async def _perform_vector_query(dataset_id: str, request: QueryRequest) -> ApiRe
         retriever = VectorRetriever(vector_store=vector_store)
         
         # Perform search
-        results = retriever.retrieve(
+        units = retriever.retrieve(
             query=request.query,
             top_k=request.top_k,
             filters=request.filters
         )
         
+        # Rerank units (best-effort)
+        units = _rerank_units(request.query, units, top_k=request.top_k)
+        
         # Build response
-        unit_results = []
-        for result in results:
+        unit_responses: List[UnitResponse] = []
+        for unit in units:
             # Extract metadata - handle both dict and UnitMetadata object
-            metadata = result.metadata if isinstance(result.metadata, dict) else result.metadata.__dict__
-            unit_results.append(UnitResponse(
-                unit_id=result.unit_id,
-                unit_type=result.unit_type,
-                content=result.content,
+            metadata = unit.metadata if isinstance(unit.metadata, dict) else unit.metadata.__dict__
+            unit_responses.append(UnitResponse(
+                unit_id=unit.unit_id,
+                unit_type=unit.unit_type,
+                content=unit.content,
                 metadata=metadata,
-                doc_id=result.doc_id,
-                score=result.score
+                doc_id=unit.doc_id,
+                score=unit.score
             ))
         
         return ApiResponse(
             success=True,
             code=200,
-            data=unit_results
+            data=unit_responses
         )
         
     except Exception as e:
@@ -164,29 +209,138 @@ async def query_fulltext(dataset_id: str, request: QueryRequest):
     Returns:
         List of relevant units with scores
     """
-    # Get dataset info
-    collection_name, engine = get_dataset_info(dataset_id)
-    
-    # TODO: Implement fulltext search with Meilisearch
-    raise HTTPException(status_code=501, detail="Fulltext search not implemented yet")
+    try:
+        # Get dataset info from cache or database
+        collection_name, engine = get_dataset_info(dataset_id)
+        
+        # Initialize full-text retriever (index name mirrors collection_name convention)
+        retriever = FullTextRetriever(
+            url=config.MEILISEARCH_HOST,
+            index_name=collection_name,
+            api_key=config.MEILISEARCH_API_KEY,
+            top_k=request.top_k or 10
+        )
+        
+        # Perform full-text search
+        units = retriever.retrieve(
+            query=request.query,
+            top_k=request.top_k,
+            filters=request.filters
+        )
+        
+        # Rerank units (best-effort)
+        units = _rerank_units(request.query, units, top_k=request.top_k)
+        
+        # Build response
+        unit_responses: List[UnitResponse] = []
+        for unit in units:
+            metadata = unit.metadata if isinstance(unit.metadata, dict) else unit.metadata.__dict__
+            tree = unit.get_view(LODLevel.HIGH) if unit.is_lod else None
+            unit_responses.append(UnitResponse(
+                unit_id=unit.unit_id,
+                unit_type=unit.unit_type,
+                content=unit.content,
+                metadata=metadata,
+                doc_id=unit.doc_id,
+                score=unit.score,
+                tree=tree if isinstance(tree, dict) else None,
+            ))
+        
+        return ApiResponse(
+            success=True,
+            code=200,
+            data=unit_responses
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Fulltext search failed: {str(e)}")
 
 
 @router.post("/{dataset_id}/query/fusion", response_model=ApiResponse[List[UnitResponse]])
 async def query_fusion(dataset_id: str, request: QueryRequest):
     """Fusion search combining vector and fulltext search.
-    
-    Args:
-        dataset_id: Dataset ID
-        request: Query request with query text, top_k, weights, etc.
-    
-    Returns:
-        List of relevant units with combined scores
+
+    Uses vector (Qdrant) and full-text (Meilisearch) retrievers as two
+    independent recall channels, unions their candidates, then applies the
+    unified reranker on top to produce the final ranking.
     """
-    # Get dataset info
-    collection_name, engine = get_dataset_info(dataset_id)
-    
-    # TODO: Implement fusion search
-    raise HTTPException(status_code=501, detail="Fusion search not implemented yet")
+    try:
+        # Get dataset info
+        collection_name, engine = get_dataset_info(dataset_id)
+
+        # Initialize embedder and vector store
+        embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
+        vector_store = QdrantVectorStore.server(
+            host=config.VECTOR_STORE_HOST,
+            port=config.VECTOR_STORE_PORT,
+            prefer_grpc=False,
+            collection_name=collection_name,
+            embedder=embedder,
+            timeout=60,
+        )
+
+        # Base retrievers
+        vector_retriever = VectorRetriever(vector_store=vector_store)
+        fulltext_retriever = FullTextRetriever(
+            url=config.MEILISEARCH_HOST,
+            index_name=collection_name,
+            api_key=config.MEILISEARCH_API_KEY,
+            top_k=request.top_k or 10,
+        )
+
+        # Determine recall sizes
+        api_top_k = request.top_k or 5
+        recall_top_k = api_top_k * 2
+
+        # Recall from vector and fulltext independently
+        vector_units = vector_retriever.retrieve(
+            query=request.query,
+            top_k=recall_top_k,
+            filters=request.filters,
+        )
+        
+        # Rewrite natural language query to keywords for BM25 fulltext recall
+        ft_query = request.fulltext_query or _rewrite_for_fulltext(request.query)
+
+        fulltext_units = fulltext_retriever.retrieve(
+            query=ft_query,
+            top_k=recall_top_k,
+            filters=request.filters,
+        )
+
+        # Union candidates by unit_id (vector has priority if duplicates)
+        candidates: Dict[str, Any] = {}
+        for unit in fulltext_units + vector_units:
+            candidates[unit.unit_id] = unit
+
+        units = list(candidates.values())
+
+        # Rerank fused candidates (best-effort)
+        units = _rerank_units(request.query, units, top_k=api_top_k)
+
+        # Build response
+        unit_responses: List[UnitResponse] = []
+        for unit in units:
+            metadata = unit.metadata if isinstance(unit.metadata, dict) else unit.metadata.__dict__
+            tree = unit.get_view(LODLevel.HIGH) if getattr(unit, "is_lod", False) else None
+            unit_responses.append(
+                UnitResponse(
+                    unit_id=unit.unit_id,
+                    unit_type=unit.unit_type,
+                    content=unit.content,
+                    metadata=metadata,
+                    doc_id=unit.doc_id,
+                    score=unit.score,
+                    tree=tree if isinstance(tree, dict) else None,
+                )
+            )
+
+        return ApiResponse(success=True, code=200, data=unit_responses)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Fusion search failed: {str(e)}")
 
 
 async def resolve_lod_ids(
@@ -203,7 +357,7 @@ async def resolve_lod_ids(
     3. both provided -> get by unit_id, validate doc_id matches
     4. neither       -> rejected by schema validator before reaching here
     """
-    from ..schemas import ProcessingMode
+    from zag.schemas import ProcessingMode
 
     if request.unit_id and not request.doc_id:
         # Case 1: unit_id only - fetch unit to get doc_id

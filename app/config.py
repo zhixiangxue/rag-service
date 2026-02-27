@@ -57,6 +57,12 @@ VECTOR_STORE_PORT = int(require_env("VECTOR_STORE_PORT"))
 VECTOR_STORE_GRPC_PORT = int(require_env("VECTOR_STORE_GRPC_PORT"))
 
 # ============================================
+# Full-Text Search Configuration
+# ============================================
+MEILISEARCH_HOST = os.getenv("MEILISEARCH_HOST")
+MEILISEARCH_API_KEY = os.getenv("MEILISEARCH_API_KEY")  # Optional
+
+# ============================================
 # Graph Database Configuration
 # ============================================
 #FALKORDB_HOST = require_env("FALKORDB_HOST")
@@ -68,12 +74,14 @@ DEFAULT_COLLECTION_NAME = require_env("DEFAULT_COLLECTION_NAME")
 DEFAULT_VECTOR_ENGINE = require_env("DEFAULT_VECTOR_ENGINE")
 
 # ============================================
-# Embedding Configuration
+# Embedding & Reranker Configuration
 # ============================================
 EMBEDDING_URI = require_env("EMBEDDING_URI")
 OPENAI_API_KEY = require_env("OPENAI_API_KEY")
 BAILIAN_API_KEY = os.getenv("BAILIAN_API_KEY")  # Optional
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")  # Optional
+# Reranker configuration (used by query endpoints and demos)
+RERANKER_URI = os.getenv("RERANKER_URI", "cohere/rerank-english-v3.0")
 
 # ============================================
 # LLM Configuration

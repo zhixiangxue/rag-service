@@ -56,31 +56,32 @@ console = Console()
 def checkpoint_cache(func):
     """
     Decorator to cache function calls in checkpoint
-    
+
     Like functools.lru_cache but persists to disk via processor checkpoint.
     Automatically generates cache key from function name + kwargs.
     """
     @wraps(func)
     async def wrapper(self, *args, **kwargs):
         # Generate cache key from function name + kwargs
-        cache_key = f"{func.__name__}({','.join(f'{k}={v}' for k, v in sorted(kwargs.items()))})" if kwargs else f"{func.__name__}()"
-        
+        cache_key = f"{func.__name__}({','.join(f'{k}={v}' for k, v in sorted(
+            kwargs.items()))})" if kwargs else f"{func.__name__}()"
+
         # Check cache
         if cache_key in self._completed_calls:
             console.print(f"[dim]⏭️  {cache_key} (cached)[/dim]")
             # Return appropriate default based on method
             return getattr(self, 'units', None) if 'units' in func.__name__ or 'split' in func.__name__ or 'process' in func.__name__ or 'extract' in func.__name__ else None
-        
+
         # Execute function
         result = await func(self, *args, **kwargs)
-        
+
         # Save to cache
         self._completed_calls.add(cache_key)
         self._save_checkpoint()
         console.print(f"[dim]✓ {cache_key}[/dim]")
-        
+
         return result
-    
+
     return wrapper
 
 
@@ -89,12 +90,13 @@ class PagePart(BaseModel):
     start_page: int  # 1-based inclusive
     end_page: int    # 1-based inclusive
     completed: bool = False
-    part_doc: Optional[PDF] = None  # The processed document for this part (with heading correction)
-    
+    # The processed document for this part (with heading correction)
+    part_doc: Optional[PDF] = None
+
     def __repr__(self):
         status = "✓" if self.completed else "○"
         return f"Part({self.start_page}-{self.end_page}) {status}"
-    
+
     class Config:
         # Allow arbitrary types (for PDF objects)
         arbitrary_types_allowed = True
@@ -117,63 +119,74 @@ class ClassicDocumentProcessor:
         self.pdf_path: Optional[Path] = None  # Current PDF being processed
         self.document: Optional[PDF] = None
         self.units: List[Union[TextUnit, TableUnit]] = []
-        
+
         # Page range being processed (for large file processing)
-        self._current_page_range: Optional[tuple] = None  # (start, end) 1-based inclusive
-        
+        # (start, end) 1-based inclusive
+        self._current_page_range: Optional[tuple] = None
+
         # Track completed steps for checkpoint recovery
-        self._completed_calls: set = set()  # Cache function calls: "method_name(arg1=val1,arg2=val2)"
-        self._parts: List[PagePart] = []  # Track parts for large file processing
+        # Cache function calls: "method_name(arg1=val1,arg2=val2)"
+        self._completed_calls: set = set()
+        # Track parts for large file processing
+        self._parts: List[PagePart] = []
 
         # Lazy-initialized subdirectories
         self._split_dir: Optional[Path] = None
         self._cache_dir: Optional[Path] = None
-    
+
     @classmethod
     def from_checkpoint(cls, output_root: Path) -> 'ClassicDocumentProcessor':
         """
         Restore processor from checkpoint if exists, otherwise create new one
-        
+
         Args:
             output_root: Root directory for all outputs
-            
+
         Returns:
             Restored or new processor instance
         """
         checkpoint_file = Path(output_root) / "checkpoints" / "processor.pkl"
-        
+
         if checkpoint_file.exists():
             try:
                 with open(checkpoint_file, 'rb') as f:
                     old_processor = pickle.load(f)
-                
+
                 # Create a new processor with current __init__ logic
                 processor = cls(output_root)
-                
+
                 # Copy state from old checkpoint
                 processor.pdf_path = old_processor.pdf_path
                 processor.document = old_processor.document
                 processor.units = old_processor.units
-                processor._current_page_range = getattr(old_processor, '_current_page_range', None)
-                processor._completed_calls = getattr(old_processor, '_completed_calls', set())
+                processor._current_page_range = getattr(
+                    old_processor, '_current_page_range', None)
+                processor._completed_calls = getattr(
+                    old_processor, '_completed_calls', set())
                 processor._parts = getattr(old_processor, '_parts', [])
-                
+
                 console.print(f"[bold cyan]🔄 Checkpoint restored![/bold cyan]")
                 console.print(f"   Checkpoint: {checkpoint_file}")
-                console.print(f"   Document: {len(processor.document.pages) if processor.document else 0} pages")
+                console.print(
+                    f"   Document: {len(processor.document.pages) if processor.document else 0} pages")
                 console.print(f"   Units: {len(processor.units)}")
-                console.print(f"   Completed calls: {len(processor._completed_calls)}")
+                console.print(
+                    f"   Completed calls: {len(processor._completed_calls)}")
                 if processor._parts:
                     completed = sum(1 for p in processor._parts if p.completed)
-                    console.print(f"   Parts: {completed}/{len(processor._parts)} completed - {processor._parts}")
-                console.print(f"[yellow]⚠️  Will skip completed calls automatically[/yellow]\n")
-                
+                    console.print(
+                        f"   Parts: {completed}/{len(processor._parts)} completed - {processor._parts}")
+                console.print(
+                    f"[yellow]⚠️  Will skip completed calls automatically[/yellow]\n")
+
                 return processor
-                
+
             except Exception as e:
-                console.print(f"[yellow]⚠️  Failed to restore checkpoint: {e}[/yellow]")
-                console.print(f"[yellow]   Creating new processor...[/yellow]\n")
-        
+                console.print(
+                    f"[yellow]⚠️  Failed to restore checkpoint: {e}[/yellow]")
+                console.print(
+                    f"[yellow]   Creating new processor...[/yellow]\n")
+
         # No checkpoint or restore failed, create new
         return cls(output_root)
 
@@ -184,7 +197,7 @@ class ClassicDocumentProcessor:
             self._split_dir = self.output_root / "split"
             self._split_dir.mkdir(exist_ok=True)
         return self._split_dir
-    
+
     @property
     def cache_dir(self) -> Path:
         """Directory for document cache"""
@@ -192,41 +205,43 @@ class ClassicDocumentProcessor:
             self._cache_dir = self.output_root / "doc"
             self._cache_dir.mkdir(parents=True, exist_ok=True)
         return self._cache_dir
-    
+
     @property
     def checkpoint_dir(self) -> Path:
         """Directory for checkpoint files"""
         checkpoint_path = self.output_root / "checkpoints"
         checkpoint_path.mkdir(exist_ok=True)
         return checkpoint_path
-    
+
     def _save_checkpoint(self) -> None:
         """Save current processor state to checkpoint"""
         checkpoint_file = self.checkpoint_dir / "processor.pkl"
-        
+
         try:
             with open(checkpoint_file, 'wb') as f:
                 pickle.dump(self, f)
-            
-            console.print(f"[green]💾 Checkpoint saved: {checkpoint_file}[/green]")
-            
+
+            console.print(
+                f"[green]💾 Checkpoint saved: {checkpoint_file}[/green]")
+
         except Exception as e:
-            console.print(f"[yellow]⚠️  Failed to save checkpoint: {e}[/yellow]")
-    
+            console.print(
+                f"[yellow]⚠️  Failed to save checkpoint: {e}[/yellow]")
+
     # ========== Document Processing ==========
-    
+
     @staticmethod
     def _calculate_page_ranges(total_pages: int, pages_per_part: int) -> List[PagePart]:
         """
         Calculate page ranges for large file processing
-        
+
         Args:
             total_pages: Total number of pages in the PDF
             pages_per_part: Maximum pages per part
-            
+
         Returns:
             List of PagePart objects
-            
+
         Example:
             >>> _calculate_page_ranges(250, 100)
             [PagePart(1-100) ○, PagePart(101-200) ○, PagePart(201-250) ○]
@@ -252,14 +267,14 @@ class ClassicDocumentProcessor:
     ) -> PDF:
         """
         Read a single PDF part with MinerU + HeadingCorrection (with automatic retry)
-        
+
         Args:
             pdf_path: Path to PDF file
             page_range: Optional page range tuple (start, end) 1-based inclusive
-            
+
         Returns:
             PDF document object
-            
+
         Note:
             - Automatically retries up to 3 times on TimeoutError
             - Waits 10 seconds between retries
@@ -292,7 +307,7 @@ class ClassicDocumentProcessor:
                 f"  ✅ Table items: {doc.metadata.custom.get('table_items_count', 0)}")
 
         return doc
-    
+
     async def read_document(
         self,
         pdf_path: Path,
@@ -300,19 +315,19 @@ class ClassicDocumentProcessor:
     ) -> PDF:
         """
         Read PDF document with automatic chunking for large files
-        
+
         Automatically splits large files into parts, reads each part with retry,
         applies heading correction, and merges. Supports checkpoint recovery at
         part level for maximum resilience.
-        
+
         Args:
             pdf_path: Path to PDF file
             max_pages_per_part: Maximum pages per part (default: 100)
                                Files with more pages will be split automatically
-        
+
         Returns:
             PDF document object
-            
+
         Note:
             - Small files (≤max_pages_per_part): Read directly
             - Large files: Split into parts, read each with retry, then merge
@@ -324,78 +339,88 @@ class ClassicDocumentProcessor:
         self.pdf_path = Path(pdf_path)
         if not self.pdf_path.exists():
             raise FileNotFoundError(f"PDF file not found: {self.pdf_path}")
-        
+
         # Get total pages
         from pypdf import PdfReader
         reader = PdfReader(str(self.pdf_path))
         total_pages = len(reader.pages)
         console.print(f"📖 Total pages: {total_pages}")
-        
+
         # Initialize parts if not already exist (first run)
         if not self._parts:
-            self._parts = self._calculate_page_ranges(total_pages, max_pages_per_part)
-        
+            self._parts = self._calculate_page_ranges(
+                total_pages, max_pages_per_part)
+
         console.print(f"✂️  Will read in {len(self._parts)} parts:")
         for i, part in enumerate(self._parts):
             console.print(f"     {i}: {part}")
-        
+
         # Process each part (skip already completed ones)
         for part in self._parts:
             if part.completed:
-                console.print(f"[dim]⏭️  Part {part.start_page}-{part.end_page} already completed, skipping[/dim]")
+                console.print(
+                    f"[dim]⏭️  Part {part.start_page}-{part.end_page} already completed, skipping[/dim]")
                 continue
-            
-            console.print(f"\n[cyan]--- Reading part {part.start_page}-{part.end_page} ---[/cyan]")
+
+            console.print(
+                f"\n[cyan]--- Reading part {part.start_page}-{part.end_page} ---[/cyan]")
             part_doc = await self._read_single_part(self.pdf_path, (part.start_page, part.end_page))
-            
+
             # Store the processed part document
             part.completed = True
             part.part_doc = part_doc
             self._save_checkpoint()
-        
+
         # All parts processed, now merge them
-        console.print(f"\n[cyan]🔗 Merging all {len(self._parts)} parts...[/cyan]")
+        console.print(
+            f"\n[cyan]🔗 Merging all {len(self._parts)} parts...[/cyan]")
         merged_doc = None
         for part in self._parts:
             if part.part_doc is None:
-                raise RuntimeError(f"Part {part.start_page}-{part.end_page} has no document!")
-            
+                raise RuntimeError(
+                    f"Part {part.start_page}-{part.end_page} has no document!")
+
             if merged_doc is None:
                 merged_doc = part.part_doc
             else:
                 merged_doc = merged_doc + part.part_doc
-            console.print(f"  ✅ Merged part {part.start_page}-{part.end_page}: {len(merged_doc.pages)} pages total")
-        
+            console.print(
+                f"  ✅ Merged part {part.start_page}-{part.end_page}: {len(merged_doc.pages)} pages total")
+
         # All parts done
-        console.print(f"\n[bold green]✅ All {len(self._parts)} parts completed and merged![/bold green]")
-        console.print(f"   Final document: {len(merged_doc.pages)} pages, {len(merged_doc.content):,} characters")
-        
+        console.print(
+            f"\n[bold green]✅ All {len(self._parts)} parts completed and merged![/bold green]")
+        console.print(
+            f"   Final document: {len(merged_doc.pages)} pages, {len(merged_doc.content):,} characters")
+
         self.document = merged_doc
         self._parts = []  # Clear parts (no longer needed)
         self._save_checkpoint()
-        
+
         # Dump to cache for reuse (best effort, failure is acceptable)
         try:
             console.print(f"\n💾 Caching document...")
             archive_path = self.document.dump(self.cache_dir)
             console.print(f"   ✅ Cached: {archive_path}")
         except Exception as e:
-            console.print(f"   ⚠️  Cache failed (non-critical): {e}", style="yellow")
-        
+            console.print(
+                f"   ⚠️  Cache failed (non-critical): {e}", style="yellow")
+
         return self.document
-    
+
     def set_document(self, document: PDF) -> None:
         """
         Set the document directly (for merged documents)
-        
+
         Used after merging multiple page range reads into a single document.
-        
+
         Args:
             document: PDF document to set
         """
         self.document = document
         # Use source field for file path (source contains the file path for local files)
-        self.pdf_path = Path(document.metadata.source) if document.metadata.source else None
+        self.pdf_path = Path(
+            document.metadata.source) if document.metadata.source else None
 
     def set_business_context(
         self,
@@ -542,7 +567,7 @@ class ClassicDocumentProcessor:
             self._export_split_visualization(units, token_counts, tokenizer)
 
         self.units = units
-        
+
         return units
 
     def _export_split_visualization(
@@ -604,12 +629,12 @@ class ClassicDocumentProcessor:
     ) -> List[Union[TextUnit, TableUnit]]:
         """
         Process tables with three stages:
-        
+
         Stage 1 (Original): Extract embedding_content for TextUnits
                            (replace markdown tables with natural language)
         Stage 2 (New):     Parse data-critical TableUnits from TextUnits
         Stage 3 (New):     Enrich TableUnits with caption and embedding_content
-        
+
         Args:
             llm_uri: LLM URI (e.g., "ollama/qwen2.5:7b")
             api_key: API key if needed
@@ -632,48 +657,48 @@ class ClassicDocumentProcessor:
                 "No units available. Call split_document() first.")
 
         console.print(f"\n📊 Processing tables with LLM: {llm_uri}")
-        
+
         # ========== Stage 1: Process TextUnit embedding_content ==========
         console.print(f"  Stage 1: Processing TextUnit embedding_content...")
         summarizer = TableSummarizer(llm_uri=llm_uri, api_key=api_key)
         results = await summarizer.aextract(self.units)
-        
+
         # Apply results to units
         for unit, metadata in zip(self.units, results):
             if metadata.get("embedding_content"):
                 unit.embedding_content = metadata["embedding_content"]
-        
+
         units_with_embedding = sum(1 for u in self.units if hasattr(
             u, 'embedding_content') and u.embedding_content)
         console.print(f"  ✅ Processed {len(self.units)} TextUnits")
         console.print(
             f"  ✅ Units with embedding_content: {units_with_embedding}")
-        
+
         # ========== Stage 2: Parse TableUnits from existing document ==========
         console.print(f"\n  Stage 2: Parsing tables from existing document...")
-        
+
         from zag.parsers import TableParser
         from zag.schemas import UnitMetadata
-        
+
         # Use existing document (already read by read_document)
         parser = TableParser()
-        
+
         # Prepare unit metadata with business context (same as TextUnit)
         unit_metadata = UnitMetadata(
             document=self.document.metadata.model_dump_deep()
         )
-        
+
         # Inject business custom metadata from original document (same as PDF.split() does for TextUnit)
         if self.document and self.document.metadata and self.document.metadata.custom:
             unit_metadata.custom.update(self.document.metadata.custom)
-        
+
         table_units = parser.parse(
             text=self.document.content,
             metadata=unit_metadata,
             doc_id=self.document.doc_id,
         )
         console.print(f"  ✅ Total tables parsed: {len(table_units)}")
-        
+
         # Infer page numbers for table units
         if table_units:
             from zag.utils.page_inference import infer_page_numbers
@@ -682,47 +707,54 @@ class ClassicDocumentProcessor:
                 self.document.pages,
                 full_content=self.document.content
             )
-            tables_with_pages = sum(1 for t in table_units if t.metadata.page_numbers)
-            console.print(f"  📄 Tables with page_numbers: {tables_with_pages}/{len(table_units)}")
-        
+            tables_with_pages = sum(
+                1 for t in table_units if t.metadata.page_numbers)
+            console.print(
+                f"  📄 Tables with page_numbers: {tables_with_pages}/{len(table_units)}")
+
         # ========== Stage 3: Enrich TableUnits (LLM-based) ==========
         if table_units:
             console.print(f"\n  Stage 3: Enriching TableUnits with LLM...")
             from zag.extractors import TableEnrichMode
-            
+
             enricher = TableEnricher(llm_uri=llm_uri, api_key=api_key)
             enriched_tables = await enricher.aextract(
                 table_units,
                 mode=TableEnrichMode.CRITICAL_ONLY  # Judge all, enrich only critical tables
             )
             console.print(f"  ✅ Enriched {len(enriched_tables)} TableUnits")
-            
+
             # Count critical tables
             critical_count = sum(
-                1 for u in enriched_tables 
+                1 for u in enriched_tables
                 if u.metadata.custom.get("table", {}).get("is_data_critical", False)
             )
-            console.print(f"  📊 {critical_count}/{len(enriched_tables)} tables are data-critical")
-            
+            console.print(
+                f"  📊 {critical_count}/{len(enriched_tables)} tables are data-critical")
+
             # Show sample
             console.print("\n  Sample enriched tables (first 3):")
             for i, table_unit in enumerate(enriched_tables[:3], 1):
-                meta_table = (table_unit.metadata.custom or {}).get("table", {})
+                meta_table = (table_unit.metadata.custom or {}
+                              ).get("table", {})
                 is_critical = meta_table.get("is_data_critical", False)
-                console.print(f"    {i}. shape: {table_unit.df.shape}, critical: {is_critical}")
+                console.print(
+                    f"    {i}. shape: {table_unit.df.shape}, critical: {is_critical}")
                 if is_critical and table_unit.caption:
-                    console.print(f"       caption: {table_unit.caption[:60]}...")
-            
+                    console.print(
+                        f"       caption: {table_unit.caption[:60]}...")
+
             # Use enriched tables
             table_units = enriched_tables
         else:
             console.print(f"\n  ⚠️  No tables found in document")
-        
+
         # ========== Merge units ==========
         original_count = len(self.units)
         self.units = self.units + table_units
-        console.print(f"\n  📦 Total units: {original_count} TextUnit + {len(table_units)} TableUnit = {len(self.units)}")
-        
+        console.print(
+            f"\n  📦 Total units: {original_count} TextUnit + {len(table_units)} TableUnit = {len(self.units)}")
+
         return self.units
 
     @checkpoint_cache
@@ -758,7 +790,8 @@ class ClassicDocumentProcessor:
         # Skip keyword extraction for large files
         total_pages = len(self.document.pages) if self.document else 0
         if total_pages > 500:
-            console.print(f"\n⚠️  Large file ({total_pages} pages), skipping keyword extraction")
+            console.print(
+                f"\n⚠️  Large file ({total_pages} pages), skipping keyword extraction")
             console.print(f"  💡 Keywords can be added later via separate task")
             # Early return (decorator will still mark as completed)
             return self.units
@@ -780,7 +813,7 @@ class ClassicDocumentProcessor:
         for i, unit in enumerate(self.units[:3], 1):
             keywords = unit.metadata.keywords or []
             console.print(f"    {i}. {keywords}")
-        
+
         return self.units
 
     # ========== Indexing ==========
@@ -817,7 +850,7 @@ class ClassicDocumentProcessor:
 
         Raises:
             ValueError: If units not available
-            
+
         Note:
             - Retries up to 10 times with exponential backoff (2s, 4s, 8s, ..., max 60s)
             - Must succeed, will keep retrying until success
@@ -848,7 +881,8 @@ class ClassicDocumentProcessor:
 
         # Clear existing data for this document before indexing
         if self.document and self.document.doc_id:
-            console.print(f"  🗑️  Clearing old classic data for doc_id: {self.document.doc_id}")
+            console.print(
+                f"  🗑️  Clearing old classic data for doc_id: {self.document.doc_id}")
             await vector_store.aremove({
                 "doc_id": self.document.doc_id,
                 "metadata.custom.mode": ProcessingMode.CLASSIC
@@ -882,7 +916,7 @@ class ClassicDocumentProcessor:
 
         Raises:
             ValueError: If units not available
-            
+
         Note:
             - This is a best-effort operation
             - If fails, logs warning and returns None
@@ -908,9 +942,24 @@ class ClassicDocumentProcessor:
             # The units with same unit_id will be automatically replaced
 
             fulltext_indexer.configure_settings(
-                searchable_attributes=["content", "context_path"],
-                filterable_attributes=["unit_type", "source_doc_id"],
-                sortable_attributes=["created_at"],
+                searchable_attributes=["*"],
+                filterable_attributes=[
+                    # top-level unit fields
+                    "unit_id",
+                    "doc_id",
+                    "unit_type",
+                    # metadata scalar fields
+                    "metadata.context_path",
+                    "metadata.page_numbers",
+                    "metadata.keywords",
+                    # metadata.document fields
+                    "metadata.document.file_name",
+                    # metadata.custom fields
+                    "metadata.custom.mode",
+                    "metadata.custom.overlays",
+                    "metadata.custom.guideline",
+                    "metadata.custom.lender",
+                ],
             )
 
             fulltext_indexer.add(self.units)
@@ -919,9 +968,11 @@ class ClassicDocumentProcessor:
                 f"  ✅ Fulltext index built: {fulltext_indexer.count()} units")
 
             return fulltext_indexer
-            
+
         except Exception as e:
-            console.print(f"  ⚠️  Fulltext index failed (non-critical): {e}", style="yellow")
-            console.print(f"  💡 You can rebuild fulltext index later", style="dim")
+            console.print(
+                f"  ⚠️  Fulltext index failed (non-critical): {e}", style="yellow")
+            console.print(
+                f"  💡 You can rebuild fulltext index later", style="dim")
             # Return None (decorator will still mark as completed)
             return None

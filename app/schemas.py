@@ -114,6 +114,7 @@ class UnitResponse(BaseModel):
     next_unit_id: Optional[str] = None
     relations: Dict[str, List[str]] = Field(default_factory=dict)
     has_views: bool = False  # Indicates if raw endpoint has multi-resolution views
+    tree: Optional[Dict[str, Any]] = None  # HIGH view DocTree, only populated for LOD units
     score: Optional[float] = None  # Relevance score from query results
 
     @classmethod
@@ -175,6 +176,7 @@ class QueryRequest(BaseModel):
     query: str
     top_k: int = Field(default=5, ge=1, le=100)
     filters: Optional[Dict[str, Any]] = None
+    fulltext_query: Optional[str] = None  # Caller-provided keyword query for BM25; auto-rewritten if absent
 
 
 class QueryResponse(BaseModel):
