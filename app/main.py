@@ -1,5 +1,7 @@
 """FastAPI application entry point."""
 import sys
+import threading
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -13,11 +15,69 @@ from . import config
 # Initialize database
 init_db()
 
+
+def _warmup_catalog_cache():
+    """Pre-build catalog cache for all datasets. Runs in background thread on startup."""
+    import concurrent.futures
+    from .database import get_connection
+    from .routers.datasets import _build_catalog, _catalog_cache, _catalog_lock
+    from cachetools.keys import hashkey
+    from . import config
+
+    # Collect all (collection_name, label) pairs to warm up
+    targets: list = []
+
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name FROM datasets")
+        rows = cursor.fetchall()
+        conn.close()
+        for row in rows:
+            targets.append((str(row["id"]), row["name"]))
+    except Exception as e:
+        print(f"[Startup] Failed to fetch datasets for catalog warmup: {e}")
+
+    # Always warm up the default collection if configured
+    if config.DEFAULT_COLLECTION_NAME:
+        targets.append(("__default__", config.DEFAULT_COLLECTION_NAME))
+
+    if not targets:
+        print("[Startup] No collections to warm up.")
+        return
+
+    for dataset_id, collection_name in targets:
+        cache_key = hashkey(collection_name)
+        with _catalog_lock:
+            if cache_key in _catalog_cache:
+                print(f"[Startup] Catalog already cached for collection {collection_name}, skipping")
+                continue
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_build_catalog, dataset_id, collection_name)
+                catalog = future.result(timeout=120)
+            with _catalog_lock:
+                _catalog_cache[cache_key] = catalog
+            print(f"[Startup] Catalog warmed up for collection {collection_name}")
+        except Exception as e:
+            print(f"[Startup] Catalog warmup failed for collection {collection_name}: {e}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Kick off catalog cache warmup in background without blocking startup."""
+    t = threading.Thread(target=_warmup_catalog_cache, daemon=True)
+    t.start()
+    yield
+
+
 # Create FastAPI app
 app = FastAPI(
     title="RAG Service",
     description="RAG service layer built on top of Zag framework",
-    version="0.1.0"
+    version="0.1.0",
+    lifespan=lifespan,
 )
 
 # CORS middleware
