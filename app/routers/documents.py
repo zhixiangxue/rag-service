@@ -514,6 +514,22 @@ def delete_document(dataset_id: str, doc_id: str):
     except Exception as e:
         # Log but don't fail the API call
         print(f"Warning: Failed to cleanup vector store for doc_id {doc_id}: {e}")
+
+    # Cleanup fulltext store (Meilisearch)
+    try:
+        from zag.indexers import FullTextIndexer
+
+        fulltext_indexer = FullTextIndexer(
+            url=config.MEILISEARCH_HOST,
+            index_name=collection_name,
+            api_key=config.MEILISEARCH_API_KEY,
+            auto_create_index=False,
+        )
+        deleted = fulltext_indexer.delete_by_doc_id(doc_id)
+        if deleted:
+            print(f"Cleaned up {deleted} units from Meilisearch for doc_id {doc_id}")
+    except Exception as e:
+        print(f"Warning: Failed to cleanup Meilisearch for doc_id {doc_id}: {e}")
     
     return ApiResponse(
         success=True,

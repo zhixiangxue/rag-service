@@ -10,17 +10,20 @@ from typing import Dict, Any, Optional
 from zag.readers import MinerUReader, MarkdownTreeReader
 from zag.extractors import CompressionExtractor
 from zag.postprocessors.correctors import HeadingCorrector
-from zag.schemas import BaseUnit, ContentView, LODLevel, TextUnit, UnitMetadata, UnitType
+from zag.schemas import BaseUnit, ContentView, LODLevel, TextUnit, UnitMetadata
 from zag.embedders import Embedder
 from zag.storages.vector import QdrantVectorStore
+
+from zag.indexers import FullTextIndexer
 
 from ..constants import ProcessingMode
 from ..exceptions import ProcessingError, ProcessingErrorCode
 from ..config import (
     LLM_PROVIDER, LLM_MODEL, LLM_API_KEY,
     EMBEDDING_URI, OPENAI_API_KEY,
-    VECTOR_STORE_HOST, VECTOR_STORE_PORT
-)
+    VECTOR_STORE_HOST, VECTOR_STORE_PORT,
+    MEILISEARCH_HOST, MEILISEARCH_API_KEY,
+) 
 
 console = Console()
 
@@ -101,6 +104,7 @@ Output compressed text (MUST be <= {target_tokens} tokens):"""
 async def index_lod(
     file_path: Path,
     collection_name: str,
+    meilisearch_index_name: str,
     custom_metadata: Optional[Dict[str, Any]] = None,
     on_progress: Optional[callable] = None,
     quick_check_target: int = 2000,
@@ -113,6 +117,7 @@ async def index_lod(
     Args:
         file_path: Path to the PDF file
         collection_name: Qdrant collection name
+        meilisearch_index_name: Meilisearch index name for fulltext search
         custom_metadata: Optional business metadata
         quick_check_target: Target token count for Quick-Check layer (default: 2000)
         shortlist_target: Target token count for Shortlist layer (default: 60000)
@@ -292,9 +297,7 @@ async def index_lod(
         content=lod_low,  # Primary content for retrieval
         embedding_content=lod_low,  # Guaranteed to fit embedding limit after retries
         metadata=UnitMetadata(
-            doc_id=doc_id,
-            unit_type=UnitType.TEXT,
-            source_file=file_path.name,
+            document=doc.metadata.model_dump(exclude={'custom'}) if doc.metadata else None,
             custom=metadata_with_mode
         ),
         views=[
@@ -338,6 +341,38 @@ async def index_lod(
     
     console.print(f"[green]✓ Indexed to vector store[/green]")
     console.print(f"  Collection: {collection_name}")
+    
+    # Step 8: Index to fulltext store (best-effort)
+    console.print("\n[yellow]Step 8: Indexing to fulltext store (Meilisearch)...[/yellow]")
+    try:
+        fulltext_indexer = FullTextIndexer(
+            url=MEILISEARCH_HOST,
+            index_name=meilisearch_index_name,
+            api_key=MEILISEARCH_API_KEY,
+            primary_key="unit_id"
+        )
+        fulltext_indexer.configure_settings(
+            searchable_attributes=["*"],
+            filterable_attributes=[
+                "unit_id",
+                "doc_id",
+                "unit_type",
+                "metadata.context_path",
+                "metadata.page_numbers",
+                "metadata.keywords",
+                "metadata.document.file_name",
+                "metadata.custom.mode",
+                "metadata.custom.overlays",
+                "metadata.custom.guideline",
+                "metadata.custom.lender",
+            ],
+        )
+        fulltext_indexer.add([lod_unit])
+        console.print(f"[green]✓ Indexed to fulltext store[/green]")
+        console.print(f"  Index: {meilisearch_index_name}")
+    except Exception as e:
+        console.print(f"[yellow]⚠️  Fulltext indexing failed (non-critical): {e}[/yellow]")
+        console.print(f"[dim]  LOD unit indexed to vector store only[/dim]")
     
     elapsed = time.time() - start_time
     

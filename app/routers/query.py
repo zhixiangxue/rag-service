@@ -11,6 +11,7 @@ from .. import config
 from zag.embedders import Embedder
 from zag.storages.vector import QdrantVectorStore
 from zag.retrievers.basic import VectorRetriever, FullTextRetriever
+from zag.retrievers.composite import QueryFusionRetriever, FusionMode, QueryRewriteRetriever
 from zag.postprocessors import Reranker
 from zag.schemas import LODLevel
 
@@ -85,7 +86,11 @@ def _rewrite_for_fulltext(query: str) -> str:
         return query
 
 
-def _rerank_units(query: str, units: list[Any], top_k: Optional[int] = None) -> list[Any]:
+def _rerank_units(
+    query: str,
+    units: list[Any],
+    top_k: Optional[int] = None,
+) -> list[Any]:
     """Apply reranker to units.
 
     Uses RERANKER_URI from app config. On any error, returns the original
@@ -101,6 +106,17 @@ def _rerank_units(query: str, units: list[Any], top_k: Optional[int] = None) -> 
         # Best-effort reranking: log and fall back to original units
         print(f"[WARN] Reranking failed, using original units: {e}")
         return units
+
+
+def _filter_by_score(units: list[Any], min_score: Optional[float]) -> list[Any]:
+    """Filter out units whose score is below min_score.
+
+    No-op when min_score is None. Should be called after reranking so that
+    the threshold is applied against final reranker scores.
+    """
+    if min_score is None:
+        return units
+    return [u for u in units if (u.score or 0.0) >= min_score]
 
 
 async def _perform_vector_query(dataset_id: str, request: QueryRequest) -> ApiResponse[List[UnitResponse]]:
@@ -140,9 +156,10 @@ async def _perform_vector_query(dataset_id: str, request: QueryRequest) -> ApiRe
             filters=request.filters
         )
         
-        # Rerank units (best-effort)
+        # Rerank then filter by score threshold
         units = _rerank_units(request.query, units, top_k=request.top_k)
-        
+        units = _filter_by_score(units, request.min_score)
+
         # Build response
         unit_responses: List[UnitResponse] = []
         for unit in units:
@@ -228,9 +245,10 @@ async def query_fulltext(dataset_id: str, request: QueryRequest):
             filters=request.filters
         )
         
-        # Rerank units (best-effort)
+        # Rerank then filter by score threshold
         units = _rerank_units(request.query, units, top_k=request.top_k)
-        
+        units = _filter_by_score(units, request.min_score)
+
         # Build response
         unit_responses: List[UnitResponse] = []
         for unit in units:
@@ -263,8 +281,11 @@ async def query_fusion(dataset_id: str, request: QueryRequest):
     """Fusion search combining vector and fulltext search.
 
     Uses vector (Qdrant) and full-text (Meilisearch) retrievers as two
-    independent recall channels, unions their candidates, then applies the
-    unified reranker on top to produce the final ranking.
+    independent recall channels via QueryFusionRetriever, then applies
+    the unified reranker on top to produce the final ranking.
+
+    The fulltext retriever is wrapped with QueryRewriteRetriever to convert
+    natural language queries into BM25-friendly keywords before retrieval.
     """
     try:
         # Get dataset info
@@ -281,44 +302,44 @@ async def query_fusion(dataset_id: str, request: QueryRequest):
             timeout=60,
         )
 
-        # Base retrievers
-        vector_retriever = VectorRetriever(vector_store=vector_store)
-        fulltext_retriever = FullTextRetriever(
-            url=config.MEILISEARCH_HOST,
-            index_name=collection_name,
-            api_key=config.MEILISEARCH_API_KEY,
-            top_k=request.top_k or 10,
-        )
-
         # Determine recall sizes
         api_top_k = request.top_k or 5
         recall_top_k = api_top_k * 2
 
-        # Recall from vector and fulltext independently
-        vector_units = vector_retriever.retrieve(
+        # Vector retriever uses the original natural language query
+        vector_retriever = VectorRetriever(vector_store=vector_store)
+
+        # Fulltext retriever wrapped with query rewrite for BM25 keyword recall
+        ft_rewrite_fn = (
+            (lambda q: request.fulltext_query)
+            if request.fulltext_query
+            else _rewrite_for_fulltext
+        )
+        fulltext_retriever = QueryRewriteRetriever(
+            retriever=FullTextRetriever(
+                url=config.MEILISEARCH_HOST,
+                index_name=collection_name,
+                api_key=config.MEILISEARCH_API_KEY,
+                top_k=recall_top_k,
+            ),
+            rewrite_fn=ft_rewrite_fn,
+        )
+
+        # Fuse both recall channels concurrently
+        fusion_retriever = QueryFusionRetriever(
+            retrievers=[vector_retriever, fulltext_retriever],
+            mode=FusionMode.RECIPROCAL_RANK,
+            top_k=recall_top_k,
+        )
+        units = await fusion_retriever.aretrieve(
             query=request.query,
             top_k=recall_top_k,
             filters=request.filters,
         )
-        
-        # Rewrite natural language query to keywords for BM25 fulltext recall
-        ft_query = request.fulltext_query or _rewrite_for_fulltext(request.query)
 
-        fulltext_units = fulltext_retriever.retrieve(
-            query=ft_query,
-            top_k=recall_top_k,
-            filters=request.filters,
-        )
-
-        # Union candidates by unit_id (vector has priority if duplicates)
-        candidates: Dict[str, Any] = {}
-        for unit in fulltext_units + vector_units:
-            candidates[unit.unit_id] = unit
-
-        units = list(candidates.values())
-
-        # Rerank fused candidates (best-effort)
+        # Rerank then filter by score threshold
         units = _rerank_units(request.query, units, top_k=api_top_k)
+        units = _filter_by_score(units, request.min_score)
 
         # Build response
         unit_responses: List[UnitResponse] = []

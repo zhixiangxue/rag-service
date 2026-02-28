@@ -91,12 +91,13 @@ async def index_graph(
             except Exception as e:
                 console.print(f"[yellow]⚠ Progress callback error: {e}[/yellow]")
     
-    # Step 1: Calculate source hash and page count (10-15%)
+    # Step 1: Calculate source hash and page ranges
     await report_progress(10)
-    
+    console.print("\n[bold white on blue] Step 1 [/bold white on blue] Preparing...")
+
     source_hash = calculate_file_hash(file_path)
-    console.print(f"🔑 Source hash: {source_hash}")
-    
+    console.print(f"  🔑 Source hash: {source_hash}")
+
     # Check file type and get page count for PDFs
     suffix = file_path.suffix.lower()
     if suffix == ".pdf":
@@ -104,212 +105,130 @@ async def index_graph(
         try:
             reader = PdfReader(file_path)
             total_pages = len(reader.pages)
-            console.print(f"📖 Total pages: {total_pages}")
+            console.print(f"  📖 Total pages: {total_pages}")
         except Exception as e:
             raise Exception(f"Failed to read PDF: {e}")
-        
+
         # Calculate page ranges
         if total_pages > MAX_PAGES_PER_PART:
             page_ranges = calculate_page_ranges(total_pages, MAX_PAGES_PER_PART)
-            console.print(f"✂️  Large file, will read in {len(page_ranges)} page ranges: {page_ranges}")
+            console.print(f"  ✂️  Large file → {len(page_ranges)} parts: {page_ranges}")
         else:
             page_ranges = [(1, total_pages)]
-            console.print(f"✅ Small file, reading all pages at once")
+            console.print(f"  ✅ Small file → single part")
     else:
-        # For non-PDF files, treat as single "page"
         page_ranges = None
         total_pages = 1
-        console.print(f"📄 Non-PDF file, processing as single part")
-    
+        console.print(f"  📄 Non-PDF → single part")
+
     # Inject mode into custom_metadata
     metadata_with_mode = {**(custom_metadata or {}), "mode": ProcessingMode.GRAPH}
-    
+
     # Create output directory using source hash
     output_dir = workspace_dir / "output" / source_hash
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    total_products = 0
-    total_rules = 0
-    total_matrices = 0
-    success_count = 0
-    error_count = 0
-    
-    # Step 2: Process each page range
+
+    # Step 2: Read document content
+    await report_progress(15)
+    console.print("\n[bold white on blue] Step 2 [/bold white on blue] Reading document...")
+
     if page_ranges:
-        # PDF processing with page ranges
-        for range_idx, (page_start, page_end) in enumerate(page_ranges, 1):
-            range_progress = 15 + int((range_idx - 0.5) / len(page_ranges) * 80)
-            await report_progress(range_progress)
-            
-            console.print(f"\n[cyan]--- Part {range_idx}/{len(page_ranges)}: pages {page_start}-{page_end} ---[/cyan]")
-            
-            try:
-                # Step 2.1: Read document content for this page range
-                console.print(f"[dim]  Step 1: Reading document...[/dim]")
-                content = await _read_document(file_path, page_range=(page_start, page_end))
-                console.print(f"  ✅ Document loaded: {len(content):,} characters")
-                
-                # Step 2.2: Extract program structure
-                console.print(f"[dim]  Step 2: Extracting program structure...[/dim]")
-                llm_uri = f"{LLM_PROVIDER}/{LLM_MODEL}"
-                
-                extractor = MortgageProgramExtractor(
-                    llm_uri=llm_uri,
-                    api_key=LLM_API_KEY,
-                )
-                
-                result = await extractor.extract(
-                    document_content=content,
-                    source_file=str(file_path),
-                )
-                console.print(f"  ✅ Extraction complete: {len(result.stages_completed)} stages")
-                
-                # Step 2.3: Store in graph database
-                console.print(f"[dim]  Step 3: Storing in graph database...[/dim]")
-                
-                from zag.storages.graph import FalkorDBGraphStorage
-                from .storage import MortgageGraphStorage
-                
-                base_storage = FalkorDBGraphStorage(
-                    host=FALKORDB_HOST,
-                    port=FALKORDB_PORT,
-                    graph_name=graph_name,
-                )
-                
-                with base_storage:
-                    mortgage_storage = MortgageGraphStorage(base_storage)
-                    program_id = mortgage_storage.store_program(result.to_graph_data())
-                    console.print(f"  ✅ Stored program: {program_id}")
-                
-                total_products += len(result.products)
-                total_rules += len(result.rules)
-                total_matrices += len(result.matrices)
-                success_count += 1
-                
-                console.print(f"[green]✓ Part {range_idx} completed[/green]")
-                console.print(f"    Products: {len(result.products)}, Rules: {len(result.rules)}, Matrices: {len(result.matrices)}")
-                
-            except Exception as e:
-                console.print(f"[red]✗ Part {range_idx} failed: {e}[/red]")
-                import traceback
-                traceback.print_exc()
-                error_count += 1
+        # PDF: read parts and merge into a single doc
+        doc = None
+        for idx, (page_start, page_end) in enumerate(page_ranges, 1):
+            console.print(f"  [{idx}/{len(page_ranges)}] Reading pages {page_start}-{page_end}...")
+            part_doc = await _read_document(file_path, page_range=(page_start, page_end))
+            doc = part_doc if doc is None else doc + part_doc
+            await report_progress(15 + int(idx / len(page_ranges) * 40))
+        content = doc.content
     else:
-        # Non-PDF processing (single file)
-        await report_progress(50)
-        
-        try:
-            console.print(f"[dim]  Step 1: Reading document...[/dim]")
-            content = await _read_document(file_path)
-            console.print(f"  ✅ Document loaded: {len(content):,} characters")
-            
-            console.print(f"[dim]  Step 2: Extracting program structure...[/dim]")
-            llm_uri = f"{LLM_PROVIDER}/{LLM_MODEL}"
-            
-            extractor = MortgageProgramExtractor(
-                llm_uri=llm_uri,
-                api_key=LLM_API_KEY,
-            )
-            
-            result = await extractor.extract(
-                document_content=content,
-                source_file=str(file_path),
-            )
-            console.print(f"  ✅ Extraction complete: {len(result.stages_completed)} stages")
-            
-            console.print(f"[dim]  Step 3: Storing in graph database...[/dim]")
-            
-            from zag.storages.graph import FalkorDBGraphStorage
-            from .storage import MortgageGraphStorage
-            
-            base_storage = FalkorDBGraphStorage(
-                host=FALKORDB_HOST,
-                port=FALKORDB_PORT,
-                graph_name=graph_name,
-            )
-            
-            with base_storage:
-                mortgage_storage = MortgageGraphStorage(base_storage)
-                program_id = mortgage_storage.store_program(result.to_graph_data())
-                console.print(f"  ✅ Stored program: {program_id}")
-            
-            total_products += len(result.products)
-            total_rules += len(result.rules)
-            total_matrices += len(result.matrices)
-            success_count += 1
-            
-        except Exception as e:
-            console.print(f"[red]✗ Processing failed: {e}[/red]")
-            import traceback
-            traceback.print_exc()
-            error_count += 1
-    
-    elapsed = time.time() - start_time
-    
+        # Non-PDF: read text directly
+        console.print("  [1/1] Reading full document...")
+        content = file_path.read_text(encoding="utf-8")
+        await report_progress(55)
+
+    console.print(f"  ✅ {len(content):,} chars loaded")
+
+    # Step 3: Extract program structure
+    await report_progress(60)
+    console.print("\n[bold white on blue] Step 3 [/bold white on blue] Extracting program structure...")
+
+    extractor = MortgageProgramExtractor(
+        llm_uri=f"{LLM_PROVIDER}/{LLM_MODEL}",
+        api_key=LLM_API_KEY,
+    )
+    result = await extractor.extract(
+        document_content=content,
+        source_file=str(file_path),
+    )
+    console.print(f"  ✅ {len(result.stages_completed)} stages — Products: {len(result.products)}, Rules: {len(result.rules)}, Matrices: {len(result.matrices)}")
+
+    # Step 4: Store in graph database
+    await report_progress(90)
+    console.print("\n[bold white on blue] Step 4 [/bold white on blue] Storing in graph database...")
+
+    from zag.storages.graph import FalkorDBGraphStorage
+    from domain.mortgage import MortgageGraphStorage
+
+    base_storage = FalkorDBGraphStorage(
+        host=FALKORDB_HOST,
+        port=FALKORDB_PORT,
+        graph_name=graph_name,
+    )
+    with base_storage:
+        mortgage_storage = MortgageGraphStorage(base_storage)
+        program_id = mortgage_storage.store_program(result.to_graph_data())
+        console.print(f"[green]✓ Stored program[/green]: {program_id}")
+
+    total_products = len(result.products)
+    total_rules = len(result.rules)
+    total_matrices = len(result.matrices)
+
     # Report near completion
     await report_progress(95)
-    
-    # Summary
-    parts_count = len(page_ranges) if page_ranges else 1
-    console.print(f"\n[bold green]📊 Processing Summary[/bold green]")
-    console.print(f"  Total parts: {parts_count}")
-    console.print(f"  Successful: {success_count}")
-    console.print(f"  Failed: {error_count}")
-    console.print(f"  Total products: {total_products}")
-    console.print(f"  Total rules: {total_rules}")
-    console.print(f"  Total matrices: {total_matrices}")
-    console.print(f"  Time: {elapsed:.2f}s\n")
-    
-    if error_count > 0:
-        raise Exception(f"Processing failed: {error_count}/{parts_count} parts failed")
-    
+
+    elapsed = time.time() - start_time
+    console.print(f"\n[bold green]✓ Done[/bold green] in {elapsed:.2f}s")
+    console.print(f"  Products: {total_products}, Rules: {total_rules}, Matrices: {total_matrices}")
+
     # Report completion
     await report_progress(98)
-    
+
     return {
         "products": total_products,
         "rules": total_rules,
         "matrices": total_matrices,
-        "parts_processed": success_count,
         "elapsed_seconds": elapsed,
         "source_hash": source_hash
     }
 
 
-async def _read_document(file_path: Path, page_range: Optional[Tuple[int, int]] = None) -> str:
+async def _read_document(file_path: Path, page_range: Optional[Tuple[int, int]] = None):
     """
-    Read document content from file.
-    
-    Args:
-        file_path: Path to the document file
-        page_range: Optional page range (start, end) for PDFs (1-based, inclusive)
-    
-    Returns:
-        Document content as string
+    Read a PDF document (optionally a specific page range) and apply heading correction.
+
+    Returns the doc object (for PDF, supports `+` merging).
+    Only PDF is supported; non-PDF files are read inline in index_graph.
     """
     suffix = file_path.suffix.lower()
-    
+
     if suffix == ".pdf":
-        # Use DoclingReader for PDF (supports page_range)
-        from zag.readers import DoclingReader
-        from docling.datamodel.pipeline_options import PdfPipelineOptions
-        from docling.datamodel.accelerator_options import AcceleratorOptions, AcceleratorDevice
-        
-        pdf_options = PdfPipelineOptions()
-        pdf_options.accelerator_options = AcceleratorOptions(
-            num_threads=8,
-            device=AcceleratorDevice.CPU  # Use CPU for stability
-        )
-        
-        reader = DoclingReader(pdf_pipeline_options=pdf_options)
+        from zag.readers import MinerUReader
+        from zag.postprocessors.correctors import HeadingCorrector
+
+        reader = MinerUReader(backend="pipeline")
         doc = reader.read(str(file_path), page_range=page_range)
-        return doc.content
-    elif suffix in [".md", ".txt"]:
-        # Read text file directly
-        return file_path.read_text(encoding="utf-8")
+
+        # Apply heading correction
+        console.print("  🔧 Correcting headings...")
+        corrector = HeadingCorrector(
+            llm_uri=f"{LLM_PROVIDER}/{LLM_MODEL}",
+            api_key=LLM_API_KEY,
+            llm_correction=True
+        )
+        doc = await corrector.acorrect_document(doc)
+        console.print("  ✅ Headings corrected")
+
+        return doc
     else:
-        # Try to read as text
-        try:
-            return file_path.read_text(encoding="utf-8")
-        except Exception as e:
-            raise ValueError(f"Unsupported file format: {suffix}") from e
+        raise ValueError(f"_read_document only supports PDF; got: {suffix}")

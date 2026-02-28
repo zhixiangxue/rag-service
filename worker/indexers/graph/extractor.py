@@ -149,6 +149,32 @@ class DocRequirementsSchema(BaseModel):
     requirements: List[DocRequirementSchema] = Field(default_factory=list)
 
 
+class GapItemSchema(BaseModel):
+    """A single identified gap in the extraction"""
+    stage: str = Field(
+        ...,
+        description=(
+            "Which stage this gap belongs to: "
+            "eligibility_matrix, state_overlays, borrower_restrictions, document_requirements"
+        ),
+    )
+    description: str = Field(..., description="What is missing or incorrect")
+    source_text: str = Field(
+        ..., description="The exact text from the document that contains this information"
+    )
+
+
+class GapDetectionSchema(BaseModel):
+    """Schema for gap detection verification pass"""
+    is_complete: bool = Field(
+        ...,
+        description="True if the extraction looks complete and accurate, False if gaps were found",
+    )
+    gaps: List[GapItemSchema] = Field(
+        default_factory=list, description="List of identified gaps"
+    )
+
+
 # =============================================================================
 # Extraction Stages Configuration
 # =============================================================================
@@ -250,14 +276,21 @@ class MortgageProgramExtractor:
             api_key=self.api_key,
         )
     
-    async def extract(self, document_content: str, source_file: str = None) -> FullExtractionResult:
+    async def extract(
+        self,
+        document_content: str,
+        source_file: str = None,
+        max_verification_rounds: int = 1,
+    ) -> FullExtractionResult:
         """
         Extract complete program structure from document content.
-        
+
         Args:
             document_content: Full document text
             source_file: Optional source file path for metadata
-            
+            max_verification_rounds: Number of gap-detection + fill rounds after initial extraction.
+                Set to 0 to skip verification. Default is 1.
+
         Returns:
             FullExtractionResult with all extracted components
         """
@@ -265,10 +298,10 @@ class MortgageProgramExtractor:
             source_file=source_file,
             extraction_timestamp=datetime.now().isoformat(),
         )
-        
-        # Truncate content if needed
-        content = document_content[:self.max_content_length * 4]  # Allow more context
-        
+
+        # Use full document - no truncation
+        content = document_content
+
         # Run each extraction stage
         for stage in self.stages:
             try:
@@ -277,8 +310,148 @@ class MortgageProgramExtractor:
                 result.stages_completed.append(stage.name)
             except Exception as e:
                 result.errors.append(f"Stage {stage.name} failed: {str(e)}")
-        
+
+        # Verification loop: detect gaps then fill them
+        for round_idx in range(max_verification_rounds):
+            try:
+                gap_result = await self._detect_gaps(content, result)
+                if gap_result is None or gap_result.is_complete or not gap_result.gaps:
+                    print(f"Verification round {round_idx + 1}: extraction complete, no gaps found")
+                    break
+                print(f"Verification round {round_idx + 1}: found {len(gap_result.gaps)} gap(s), filling...")
+                await self._fill_gaps(gap_result.gaps, content, result)
+            except Exception as e:
+                result.errors.append(f"Verification round {round_idx + 1} failed: {str(e)}")
+                break
+
         return result
+
+    async def _detect_gaps(
+        self, document_content: str, current_result: FullExtractionResult
+    ) -> Optional[GapDetectionSchema]:
+        """
+        Verify extraction completeness by asking LLM to compare extracted data against the source.
+
+        The LLM receives the full document + current extraction JSON and identifies
+        anything that's missing or incorrect.
+        """
+        import json
+
+        extracted_summary = {
+            "program": current_result.program.model_dump() if current_result.program else None,
+            "products_count": len(current_result.products),
+            "products": [p.model_dump() for p in current_result.products],
+            "matrix_cells_count": current_result.cell_count,
+            "matrix_cells_sample": [
+                c.model_dump() for c in current_result.cells[:10]
+            ],
+            "rules_count": len(current_result.rules),
+            "rules": [r.model_dump() for r in current_result.rules],
+            "document_requirements_count": len(current_result.document_requirements),
+            "document_requirements": [
+                d.model_dump() for d in current_result.document_requirements
+            ],
+        }
+
+        prompt = f"""You are reviewing the extraction of a mortgage program document.
+
+Below is the ORIGINAL DOCUMENT and the EXTRACTED DATA. Your job is to identify what is missing
+or incorrect in the extracted data compared to the document.
+
+Focus on:
+1. Matrix cells: Are all FICO/DSCR/LTV combinations captured? Missing rows or columns?
+2. Adjustment rules: Cash-Out LTV adjustments, loan amount overlays, property type overlays?
+3. State overlays: Any states with restrictions not in the rules list?
+4. Borrower restrictions: Foreign National, ITIN, First Time Investor rules missing?
+5. Document requirements: Any conditional document requirements not captured?
+
+EXTRACTED DATA:
+{json.dumps(extracted_summary, indent=2)}
+
+ORIGINAL DOCUMENT:
+{document_content}
+
+Identify ALL gaps. For each gap, provide the stage it belongs to and the exact source text."""
+
+        try:
+            conv = self._chak.Conversation(self.llm_uri, api_key=self.api_key)
+            result = await conv.asend(prompt, returns=GapDetectionSchema)
+            return result
+        except Exception as e:
+            print(f"Warning: Gap detection failed: {e}")
+            return None
+
+    async def _fill_gaps(
+        self,
+        gaps: List[GapItemSchema],
+        document_content: str,
+        result: FullExtractionResult,
+    ) -> None:
+        """
+        For each identified gap, run a targeted extraction using only the relevant source text,
+        then merge the new data into the existing result.
+        """
+        # Group gaps by stage for efficiency
+        from collections import defaultdict
+        gaps_by_stage: Dict[str, List[GapItemSchema]] = defaultdict(list)
+        for gap in gaps:
+            gaps_by_stage[gap.stage].append(gap)
+
+        for stage_name, stage_gaps in gaps_by_stage.items():
+            schema = self._get_stage_schema(stage_name)
+            if schema is BaseModel:
+                continue  # Unknown stage, skip
+
+            # Combine the source texts from all gaps in this stage
+            combined_source = "\n\n---\n\n".join(
+                f"Gap: {g.description}\nSource text:\n{g.source_text}"
+                for g in stage_gaps
+            )
+
+            prompt = (
+                f"The following text was identified as missing from a previous extraction pass.\n"
+                f"Extract ONLY the data described in each gap from the source text below.\n\n"
+                f"{combined_source}"
+            )
+
+            try:
+                conv = self._chak.Conversation(self.llm_uri, api_key=self.api_key)
+                extracted = await conv.asend(prompt, returns=schema)
+                if extracted is None:
+                    continue
+                # Merge into result - append only, never overwrite
+                self._merge_stage_result_append(result, stage_name, extracted.model_dump())
+            except Exception as e:
+                print(f"Warning: Gap fill for stage '{stage_name}' failed: {e}")
+
+    def _merge_stage_result_append(
+        self,
+        result: FullExtractionResult,
+        stage_name: str,
+        stage_data: Dict[str, Any],
+    ) -> None:
+        """
+        Append-only merge for gap-fill results.
+        Unlike _merge_stage_result, this never overwrites existing data.
+        """
+        if not stage_data:
+            return
+
+        if stage_name == "eligibility_matrix":
+            matrices = self._build_matrix(stage_data)
+            if matrices:
+                result.matrices.extend(matrices)
+
+        elif stage_name in ("borrower_restrictions", "state_overlays"):
+            if stage_name == "borrower_restrictions":
+                rules = self._build_borrower_rules(stage_data.get("restrictions", []))
+            else:
+                rules = self._build_state_overlays(stage_data.get("overlays", []))
+            result.rules.extend(rules)
+
+        elif stage_name == "document_requirements":
+            new_reqs = self._build_doc_requirements(stage_data.get("requirements", []))
+            result.document_requirements.extend(new_reqs)
     
     async def _run_stage(self, stage: ExtractionStage, content: str) -> Dict[str, Any]:
         """Run a single extraction stage."""

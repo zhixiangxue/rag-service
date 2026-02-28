@@ -185,6 +185,7 @@ async def process_single_task(task: Dict[str, Any]) -> int:
             result = await index_lod(
                 file_path=file_path,
                 collection_name=collection_name,
+                meilisearch_index_name=collection_name,
                 custom_metadata=custom_metadata,
                 on_progress=update_progress,
                 vector_store_grpc_port=config.VECTOR_STORE_GRPC_PORT
