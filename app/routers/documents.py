@@ -297,6 +297,96 @@ async def create_task(
     )
 
 
+@router.get("/{doc_id}/views", response_model=ApiResponse[list])
+def get_document_views(
+    dataset_id: str,
+    doc_id: str,
+    level: Optional[str] = None,
+):
+    """Get LOD views for a document.
+
+    Args:
+        level: Filter by level - low | medium | high | full. Returns all if omitted.
+
+    Response items:
+        - LOW/MEDIUM/FULL: {level, content, token_count}
+        - HIGH (DocTree):  {level, tree, token_count}
+    """
+    from zag.storages.vector import QdrantVectorStore
+    from zag.embedders import Embedder
+    from zag.schemas import LODLevel
+
+    # Validate level param
+    valid_levels = {lv.value for lv in LODLevel}
+    if level and level not in valid_levels:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid level '{level}'. Must be one of: {sorted(valid_levels)}"
+        )
+
+    # Resolve collection_name
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM datasets WHERE id = ?", (dataset_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        if config.DEFAULT_COLLECTION_NAME:
+            collection_name = config.DEFAULT_COLLECTION_NAME
+        else:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+    else:
+        collection_name = row["name"]
+
+    # Fetch LOD unit via QdrantVectorStore.fetch
+    try:
+        embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
+        vector_store = QdrantVectorStore.server(
+            host=config.VECTOR_STORE_HOST,
+            port=config.VECTOR_STORE_PORT,
+            grpc_port=config.VECTOR_STORE_GRPC_PORT,
+            prefer_grpc=True,
+            collection_name=collection_name,
+            embedder=embedder,
+        )
+        units = vector_store.fetch({
+            "doc_id": doc_id,
+            "metadata.custom.mode": "lod",
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch views: {str(e)}")
+
+    if not units:
+        raise HTTPException(status_code=404, detail="No LOD views found for this document")
+
+    # Use the first (and only) LOD unit
+    lod_unit = units[0]
+    if not lod_unit.views:
+        raise HTTPException(status_code=404, detail="LOD unit has no views")
+
+    # Build response items, optionally filtered by level
+    result = []
+    for view in lod_unit.views:
+        if level and view.level != level:
+            continue
+
+        if view.level == LODLevel.HIGH:
+            result.append({
+                "level": view.level if isinstance(view.level, str) else view.level.value,
+                "tree": view.content,
+                "token_count": view.token_count,
+            })
+        else:
+            result.append({
+                "level": view.level if isinstance(view.level, str) else view.level.value,
+                "content": view.content,
+                "token_count": view.token_count,
+            })
+
+    return ApiResponse(success=True, code=200, data=result)
+
+
 @router.get("/{doc_id}/tasks", response_model=ApiResponse[List[TaskResponse]])
 def list_document_tasks(dataset_id: str, doc_id: str):
     """Get all tasks for a specific document."""
