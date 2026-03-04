@@ -103,6 +103,18 @@ class TaskStatusUpdate(BaseModel):
 
 # ============ Unit ============
 
+def _extract_tags(unit: Any) -> List[str]:
+    """Extract tags list from unit.metadata.custom.tags, return [] if absent."""
+    try:
+        custom = unit.metadata.custom if unit.metadata else {}
+        if isinstance(custom, dict):
+            tags = custom.get("tags", [])
+        else:
+            tags = getattr(custom, "tags", []) or []
+        return tags if isinstance(tags, list) else []
+    except Exception:
+        return []
+
 class UnitResponse(BaseModel):
     """Unit response model (lightweight) - excludes large fields like views."""
     unit_id: str
@@ -116,6 +128,7 @@ class UnitResponse(BaseModel):
     has_views: bool = False  # Indicates if raw endpoint has multi-resolution views
     tree: Optional[Dict[str, Any]] = None  # HIGH view DocTree, only populated for LOD units
     score: Optional[float] = None  # Relevance score from query results
+    tags: List[str] = Field(default_factory=list)  # Document tags from metadata.custom.tags
 
     @classmethod
     def from_unit(cls, unit: "BaseUnit") -> "UnitResponse":
@@ -129,7 +142,8 @@ class UnitResponse(BaseModel):
             prev_unit_id=unit.prev_unit_id,
             next_unit_id=unit.next_unit_id,
             relations=unit.relations if unit.relations else {},
-            has_views=bool(unit.views) if hasattr(unit, 'views') else False
+            has_views=bool(unit.views) if hasattr(unit, 'views') else False,
+            tags=_extract_tags(unit),
         )
 
 
@@ -144,6 +158,7 @@ class UnitRawResponse(BaseModel):
     next_unit_id: Optional[str] = None
     relations: Dict[str, List[str]] = Field(default_factory=dict)
     views: Optional[List[Dict[str, Any]]] = None
+    tags: List[str] = Field(default_factory=list)  # Document tags from metadata.custom.tags
     
     @classmethod
     def from_unit(cls, unit: "BaseUnit") -> "UnitRawResponse":
@@ -157,7 +172,8 @@ class UnitRawResponse(BaseModel):
             prev_unit_id=unit.prev_unit_id,
             next_unit_id=unit.next_unit_id,
             relations=unit.relations if unit.relations else {},
-            views=[v.model_dump() for v in unit.views] if unit.views else None
+            views=[v.model_dump() for v in unit.views] if unit.views else None,
+            tags=_extract_tags(unit),
         )
 
 

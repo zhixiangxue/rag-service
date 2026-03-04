@@ -5,7 +5,7 @@ from cachetools import cached, TTLCache
 from cachetools.keys import hashkey
 import threading
 
-from ..schemas import QueryRequest, UnitResponse, ApiResponse, TreeQueryRequest
+from ..schemas import QueryRequest, UnitResponse, ApiResponse, TreeQueryRequest, _extract_tags
 from ..database import get_connection
 from .. import config
 from zag.embedders import Embedder
@@ -171,7 +171,8 @@ async def _perform_vector_query(dataset_id: str, request: QueryRequest) -> ApiRe
                 content=unit.content,
                 metadata=metadata,
                 doc_id=unit.doc_id,
-                score=unit.score
+                score=unit.score,
+                tags=_extract_tags(unit),
             ))
         
         return ApiResponse(
@@ -262,6 +263,7 @@ async def query_fulltext(dataset_id: str, request: QueryRequest):
                 doc_id=unit.doc_id,
                 score=unit.score,
                 tree=tree if isinstance(tree, dict) else None,
+                tags=_extract_tags(unit),
             ))
         
         return ApiResponse(
@@ -355,6 +357,7 @@ async def query_fusion(dataset_id: str, request: QueryRequest):
                     doc_id=unit.doc_id,
                     score=unit.score,
                     tree=tree if isinstance(tree, dict) else None,
+                    tags=_extract_tags(unit),
                 )
             )
 

@@ -15,7 +15,8 @@ from ..schemas import (
     ApiResponse,
     MessageResponse,
     TaskResponse,
-    ProcessingMode
+    ProcessingMode,
+    _extract_tags,
 )
 from ..storage import get_storage
 from ..constants import TaskStatus, DocumentStatus
@@ -367,6 +368,7 @@ def get_document_views(
 
     # Build response items, optionally filtered by level
     result = []
+    tags = _extract_tags(lod_unit)
     for view in lod_unit.views:
         if level and view.level != level:
             continue
@@ -376,12 +378,14 @@ def get_document_views(
                 "level": view.level if isinstance(view.level, str) else view.level.value,
                 "tree": view.content,
                 "token_count": view.token_count,
+                "tags": tags,
             })
         else:
             result.append({
                 "level": view.level if isinstance(view.level, str) else view.level.value,
                 "content": view.content,
                 "token_count": view.token_count,
+                "tags": tags,
             })
 
     return ApiResponse(success=True, code=200, data=result)

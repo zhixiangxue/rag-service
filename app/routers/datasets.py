@@ -75,14 +75,21 @@ def _build_catalog(dataset_id: str, collection_name: str) -> Dict[str, Dict[str,
 
             lender = custom.get("lender")
             file_name = document.get("file_name") or doc_id
+            tags = custom.get("tags") or []
 
             # Skip units without a known lender
             if not lender:
                 continue
 
+            # Build display value: "file_name, tags: tag1, tag2" (or just file_name if no tags)
+            if tags and isinstance(tags, list):
+                display_value = f"{file_name}, tags: {', '.join(str(t) for t in tags)}"
+            else:
+                display_value = file_name
+
             if lender not in catalog:
                 catalog[lender] = {}
-            catalog[lender][doc_id] = file_name
+            catalog[lender][doc_id] = display_value
 
         if not next_offset:
             break
