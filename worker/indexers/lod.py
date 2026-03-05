@@ -17,6 +17,7 @@ from zag.storages.vector import QdrantVectorStore
 from zag.indexers import FullTextIndexer
 
 from ..constants import ProcessingMode
+from ..exceptions import ProcessingError, ProcessingErrorCode
 from ..config import (
     LLM_PROVIDER, LLM_MODEL, LLM_API_KEY,
     EMBEDDING_URI, OPENAI_API_KEY,
@@ -157,7 +158,11 @@ async def index_lod(
         console.print(Panel(warning_table, title="[bold red]PROCESSING REJECTED[/bold red]", border_style="red"))
         console.print("")
         
-        raise ValueError(f"Document has {page_count} pages, exceeds LOD limit of {MAX_LOD_PAGES} pages. Use CLASSIC mode.")
+        raise ProcessingError(
+            error_code=ProcessingErrorCode.UNSUITABLE_FOR_LOD_COMPRESSION_FAILED,
+            message=f"Document has {page_count} pages, exceeds LOD limit of {MAX_LOD_PAGES} pages. Use CLASSIC mode.",
+            suggestion="Re-submit this document using CLASSIC mode."
+        )
     
     console.print(f"  Pages: {page_count} (✓ within limit)")
     

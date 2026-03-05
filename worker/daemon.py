@@ -13,6 +13,7 @@ import json
 import sys
 import subprocess
 import signal
+import csv
 from pathlib import Path
 from typing import Optional, Dict, Any
 from datetime import datetime
@@ -24,6 +25,67 @@ from .constants import TaskStatus
 from . import config
 
 console = Console()
+
+
+def _log_task_result(
+    task_id: str,
+    dataset_id: str,
+    doc_id: str,
+    file_name: str,
+    mode: str,
+    status: str,
+    start_time: datetime,
+    end_time: datetime,
+    exit_code: int,
+    error_message: str = ""
+):
+    """Log task result to CSV file at ~/.mai/worker/tasks.csv.
+    
+    Args:
+        task_id: Task unique ID
+        dataset_id: Dataset ID
+        doc_id: Document ID
+        file_name: Document file name
+        mode: Processing mode (classic/lod)
+        status: Final status (COMPLETED/FAILED/CANCELLED)
+        start_time: Task start time
+        end_time: Task end time
+        exit_code: Subprocess exit code (0=success, 1=failure, 2=cancelled)
+        error_message: Error description when task failed
+    """
+    log_dir = Path.home() / ".mai" / "worker"
+    log_file = log_dir / "tasks.csv"
+    fields = ["task_id", "dataset_id", "doc_id", "file_name", "mode",
+              "status", "start_time", "end_time", "duration_seconds", "exit_code", "error_message"]
+    
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        
+        duration = (end_time - start_time).total_seconds()
+        file_exists = log_file.exists()
+        
+        with open(log_file, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow({
+                "task_id": task_id,
+                "dataset_id": dataset_id,
+                "doc_id": doc_id,
+                "file_name": file_name or "",
+                "mode": mode,
+                "status": status,
+                "start_time": start_time.isoformat(),
+                "end_time": end_time.isoformat(),
+                "duration_seconds": f"{duration:.2f}",
+                "exit_code": exit_code,
+                "error_message": error_message or ""
+            })
+        
+        console.print(f"[dim]Task result logged to {log_file}[/dim]")
+    except Exception as e:
+        # Log error but don't fail the main process
+        console.print(f"[yellow]Failed to log task result: {e}[/yellow]")
 
 
 def check_gpu_memory_usage() -> Optional[float]:
@@ -154,6 +216,43 @@ class RagWorker:
                 console.print(f"[red]⚠️  Unexpected error: {type(e).__name__} - {str(e)[:100]}[/red]")
                 return None
     
+    async def _get_task_info(self, task_id: str, dataset_id: str, doc_id: str) -> tuple[str, str]:
+        """Get document file name and error message from API.
+        
+        Args:
+            task_id: Task ID (to fetch error_message)
+            dataset_id: Dataset ID
+            doc_id: Document ID
+            
+        Returns:
+            Tuple of (file_name, error_message), empty strings if failed
+        """
+        file_name = ""
+        error_message = ""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Get file name from document API
+                doc_response = await client.get(
+                    f"{self.api_base_url}/datasets/{dataset_id}/documents/{doc_id}"
+                )
+                doc_response.raise_for_status()
+                file_name = doc_response.json().get("data", {}).get("file_name", "")
+                
+                # Get error message from task API
+                task_response = await client.get(f"{self.api_base_url}/tasks/{task_id}")
+                task_response.raise_for_status()
+                task_data = task_response.json().get("data", {})
+                raw_error = task_data.get("error_message")
+                if raw_error:
+                    # error_message may be a dict (structured) or plain string
+                    if isinstance(raw_error, dict):
+                        error_message = raw_error.get("message", str(raw_error))
+                    else:
+                        error_message = str(raw_error)
+        except Exception as e:
+            console.print(f"[yellow]Failed to get task info: {e}[/yellow]")
+        return file_name, error_message
+    
     def process_task_in_subprocess(self, task: Dict[str, Any]) -> int:
         """Process a task in an isolated subprocess with automatic retry.
         
@@ -209,6 +308,10 @@ class RagWorker:
                     # Task was cancelled by user, don't retry
                     console.print(f"[yellow]Task cancelled by user, skipping retry[/yellow]")
                     return 2
+                elif exit_code == 3:
+                    # Permanent failure (e.g. page limit exceeded), don't retry
+                    console.print(f"[yellow]Permanent failure, skipping retry[/yellow]")
+                    return 3
                 else:
                     # Task failed
                     console.print(f"[red]Subprocess failed with exit code {exit_code}[/red]")
@@ -306,8 +409,37 @@ class RagWorker:
                     if self.shutdown_requested:
                         console.print("[yellow]Shutdown requested, skipping task[/yellow]")
                     else:
+                        # Record start time
+                        start_time = datetime.now()
+                        
                         # Process task in subprocess
                         exit_code = self.process_task_in_subprocess(task)
+                        
+                        # Record end time
+                        end_time = datetime.now()
+                        
+                        # Map exit code to status
+                        status_map = {0: "COMPLETED", 1: "FAILED", 2: "CANCELLED", 3: "FAILED"}
+                        status = status_map.get(exit_code, "FAILED")
+                        
+                        # Get file_name and error_message from API
+                        file_name, error_message = await self._get_task_info(
+                            task["task_id"], task["dataset_id"], task["doc_id"]
+                        )
+                        
+                        # Log task result
+                        _log_task_result(
+                            task_id=task["task_id"],
+                            dataset_id=task["dataset_id"],
+                            doc_id=task["doc_id"],
+                            file_name=file_name,
+                            mode=task.get("mode", "classic"),
+                            status=status,
+                            start_time=start_time,
+                            end_time=end_time,
+                            exit_code=exit_code,
+                            error_message=error_message
+                        )
                         
                         # Cleanup after subprocess (defensive)
                         cleanup_gpu_memory()

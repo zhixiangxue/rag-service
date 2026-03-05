@@ -175,7 +175,7 @@ async def process_single_task(task: Dict[str, Any]) -> int:
         mapping_table.add_row("Vector Store", "-->", f"Qdrant @ {config.VECTOR_STORE_HOST}:{config.VECTOR_STORE_PORT}")
         
         console.print("\n")
-        console.print(Panel(mapping_table, title="[bold]Data Mapping[/bold]", border_style="magenta"))
+        console.print(Panel(mapping_table, title="[bold]Task Overview[/bold]", border_style="magenta"))
         console.print("")
         
         # Process document
@@ -261,7 +261,10 @@ async def process_single_task(task: Dict[str, Any]) -> int:
             TaskStatus.FAILED,
             error_message=e.to_dict()  # Structured error
         )
-        return 1
+        # Exit code 3 = permanent failure, daemon should NOT retry
+        # Exit code 1 = transient/unknown failure, daemon will retry
+        from .exceptions import ProcessingErrorType
+        return 3 if e.error_type == ProcessingErrorType.PERMANENT else 1
         
     except Exception as e:
         # Unstructured error (unexpected)
