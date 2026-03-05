@@ -17,7 +17,6 @@ from zag.storages.vector import QdrantVectorStore
 from zag.indexers import FullTextIndexer
 
 from ..constants import ProcessingMode
-from ..exceptions import ProcessingError, ProcessingErrorCode
 from ..config import (
     LLM_PROVIDER, LLM_MODEL, LLM_API_KEY,
     EMBEDDING_URI, OPENAI_API_KEY,
@@ -230,16 +229,13 @@ async def index_lod(
             current_target = int(current_target * 0.7)
             console.print(f"  ⚠️  Exceeds embedding limit ({MAX_EMBEDDING_TOKENS}), retrying with lower target...")
         else:
-            # All retries failed
-            raise ProcessingError(
-                error_code=ProcessingErrorCode.UNSUITABLE_FOR_LOD_COMPRESSION_FAILED,
-                message=f"Failed to compress Quick-Check layer below {MAX_EMBEDDING_TOKENS} tokens after {max_retries} attempts",
-                details={
-                    "final_tokens": lod_low_tokens,
-                    "embedding_limit": MAX_EMBEDDING_TOKENS,
-                    "original_tokens": original_tokens
-                },
-                suggestion="Try classic mode instead"
+            # All retries failed — truncate to hard limit instead of raising
+            TRUNCATE_LIMIT = int(MAX_EMBEDDING_TOKENS * 0.8)
+            lod_low = extractor.truncate(lod_low, TRUNCATE_LIMIT)
+            lod_low_tokens = extractor.count_tokens(lod_low)
+            console.print(
+                f"[yellow]⚠️  Compression failed after {max_retries} attempts. "
+                f"Truncated to {TRUNCATE_LIMIT} tokens — information loss accepted.[/yellow]"
             )
     
     # Step 4: Extract Shortlist layer (lod_medium)

@@ -39,15 +39,16 @@ class DocumentStatus(str, Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     DISABLED = "DISABLED"
-    
+
     @staticmethod
     def is_valid_transition(from_status: str, to_status: str) -> bool:
-        """Check if status transition is valid.
-        
+        """
+        Check if status transition is valid.
+
         Args:
             from_status: Current status
             to_status: Target status
-            
+
         Returns:
             True if transition is allowed, False otherwise
         """
@@ -58,5 +59,5 @@ class DocumentStatus(str, Enum):
             DocumentStatus.FAILED: [DocumentStatus.DISABLED],  # Can be disabled
             DocumentStatus.DISABLED: []  # Terminal state
         }
-        
+
         return to_status in valid_transitions.get(from_status, [])

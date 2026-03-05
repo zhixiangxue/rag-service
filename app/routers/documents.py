@@ -5,10 +5,11 @@ from typing import List, Optional
 import os
 import json
 import sqlite3
+import tempfile
 from pathlib import Path
 
 from zag.utils.hash import calculate_file_hash
-from ..utils.s3 import download_file_from_s3, download_file_from_s3_async
+from ..utils.s3 import get_s3_object_info, download_file_from_s3_async
 from ..database import get_connection, now, generate_id
 from ..schemas import (
     DocumentResponse,
@@ -25,6 +26,58 @@ from .. import config
 router = APIRouter(prefix="/datasets/{dataset_id}/documents", tags=["documents"])
 
 
+def _validate_metadata(metadata: Optional[str]) -> dict:
+    """
+    Validate metadata JSON string and guideline field.
+    
+    Args:
+        metadata: JSON string or None
+        
+    Returns:
+        Parsed metadata dict
+        
+    Raises:
+        ValueError: If metadata is invalid or guideline value is not allowed
+    """
+    if metadata is None:
+        raise ValueError(
+            "metadata is required. Please provide a JSON object. "
+            "Recommended fields: "
+            '{"lender": "xxx", "guideline": "FannieMae|FreddieMac|VA|USDA|FHA", '
+            '"overlays": ["xxx"], "tags": ["xxx"]}'
+        )
+    try:
+        metadata_dict = json.loads(metadata)
+        if not isinstance(metadata_dict, dict):
+            raise ValueError("Metadata must be a JSON object")
+    except json.JSONDecodeError:
+        raise ValueError("Metadata must be valid JSON")
+
+    # Validate guideline and overlays fields
+    VALID_GUIDELINES = {"FannieMae", "FreddieMac", "VA", "USDA", "FHA"}
+
+    if "guideline" in metadata_dict:
+        guideline_val = metadata_dict["guideline"]
+        if guideline_val not in VALID_GUIDELINES:
+            raise ValueError(
+                f'Invalid guideline value: "{guideline_val}". '
+                f"Must be one of: {sorted(VALID_GUIDELINES)}"
+            )
+
+    if "overlays" in metadata_dict:
+        overlays = metadata_dict["overlays"]
+        if not isinstance(overlays, list):
+            raise ValueError('overlays must be an array')
+        for item in overlays:
+            if item not in VALID_GUIDELINES:
+                raise ValueError(
+                    f'Invalid overlays value: "{item}". '
+                    f"Must be one of: {sorted(VALID_GUIDELINES)}"
+                )
+
+    return metadata_dict
+
+
 def _create_document_record(
     dataset_id: str,
     file_path: str,
@@ -32,41 +85,41 @@ def _create_document_record(
     metadata: Optional[str] = None
 ) -> dict:
     """
-    Create document record after file is saved.
+    Create document record after a local file is saved.
     Handles dataset validation, hash calculation, duplicate check, and database insert.
-    
+
     Args:
         dataset_id: Dataset ID
-        file_path: Path to saved file
+        file_path: Local path to the saved file
         filename: Original filename
         metadata: Optional JSON metadata string
-        
+
     Returns:
         dict with doc_id, file_name, file_path, file_hash, and status info
-        
+
     Raises:
         ValueError: If metadata is invalid
         HTTPException: If dataset not found (404)
     """
     conn = get_connection()
     cursor = conn.cursor()
-    
+
     try:
         # Check if dataset exists
         cursor.execute("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="Dataset not found")
-        
+
         # Calculate file hash using zag's utility on saved file
         file_hash = calculate_file_hash(file_path)
-        
+
         # Check for duplicate: same dataset + same file_hash
         cursor.execute(
             "SELECT id, file_name FROM documents WHERE dataset_id = ? AND file_hash = ?",
             (dataset_id, file_hash)
         )
         existing_doc = cursor.fetchone()
-        
+
         if existing_doc:
             # File already uploaded, check if old file still exists
             cursor.execute(
@@ -74,7 +127,7 @@ def _create_document_record(
                 (existing_doc['id'],)
             )
             old_doc = cursor.fetchone()
-            
+
             if old_doc and os.path.exists(old_doc['file_path']):
                 # Old file exists, delete duplicate and reuse existing doc_id
                 os.remove(file_path)
@@ -89,29 +142,21 @@ def _create_document_record(
                 # Old file doesn't exist, delete old record and continue with new upload
                 cursor.execute("DELETE FROM documents WHERE id = ?", (existing_doc['id'],))
                 conn.commit()
-        
+
         # Extract workspace directory (parent of file)
         workspace_dir = os.path.dirname(file_path)
-        
+
         file_size = os.path.getsize(file_path)
         file_type = filename.split(".")[-1] if "." in filename else "unknown"
-        
+
         # Parse and validate metadata
-        if metadata:
-            try:
-                metadata_dict = json.loads(metadata)
-                if not isinstance(metadata_dict, dict):
-                    raise ValueError("Metadata must be a JSON object")
-            except json.JSONDecodeError:
-                raise ValueError("Metadata must be valid JSON")
-        else:
-            metadata_dict = {}
+        metadata_dict = _validate_metadata(metadata)
         metadata_json = json.dumps(metadata_dict)
-        
+
         timestamp = now()
         # Use file_hash as doc_id to ensure same content gets same ID
         doc_id = file_hash
-        
+
         # Create Document record with file_hash and metadata
         # Use INSERT OR IGNORE to handle race conditions
         try:
@@ -123,7 +168,7 @@ def _create_document_record(
                 (doc_id, dataset_id, filename, file_path, workspace_dir, file_size, file_type, file_hash, metadata_json, DocumentStatus.PROCESSING, timestamp, timestamp)
             )
             conn.commit()
-            
+
             return {
                 "dataset_id": str(dataset_id),
                 "doc_id": str(doc_id),
@@ -136,17 +181,17 @@ def _create_document_record(
             # UNIQUE constraint violation: duplicate file_hash
             # This means another request inserted the same file first
             conn.rollback()
-            
+
             # Delete the newly uploaded file (duplicate)
             os.remove(file_path)
-            
+
             # Re-query to get the existing document
             cursor.execute(
                 "SELECT id, file_name FROM documents WHERE dataset_id = ? AND file_hash = ?",
                 (dataset_id, file_hash)
             )
             existing_doc = cursor.fetchone()
-            
+
             return {
                 "dataset_id": str(dataset_id),
                 "doc_id": str(existing_doc['id']),
@@ -162,7 +207,7 @@ def _create_document_record(
 async def upload_file(
     dataset_id: str,
     file: UploadFile = File(...),
-    metadata: Optional[str] = Form(None)
+    metadata: str = Form(...)
 ):
     """Upload file to dataset."""
     # Save file using storage abstraction
@@ -183,46 +228,63 @@ async def upload_file(
 async def upload_from_s3(
     dataset_id: str,
     s3_url: str = Body(..., embed=True),
-    metadata: Optional[str] = Body(None, embed=True)
+    metadata: str = Body(..., embed=True),
 ):
-    """Download file from S3 URL and add to dataset."""
+    """
+    Download a file from S3 and register it in the dataset.
+
+    Identical flow to local upload: download -> compute content hash -> insert record.
+    doc_id = content hash, same dedup logic applies.
+    S3 existence is verified upfront via a HEAD request (400 if not found).
+    """
+    if not s3_url.startswith("s3://"):
+        raise HTTPException(status_code=400, detail="s3_url must start with 's3://'")
+
     filename = Path(s3_url).name
     if not filename:
-        raise HTTPException(status_code=400, detail="Invalid S3 URL")
-    
-    # Download file from S3 to temp location
+        raise HTTPException(status_code=400, detail="Cannot determine filename from S3 URL")
+
+    # Verify the file exists on S3 before downloading (cheap HEAD request)
+    try:
+        get_s3_object_info(
+            s3_url,
+            aws_access_key_id=config.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=config.AWS_SECRET_KEY,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=400, detail=f"File not found in S3: {s3_url}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to verify S3 file: {str(e)}")
+
+    # Download to a temp location
     storage = get_storage()
-    temp_dir = Path(storage.base_dir) / dataset_id / "temp"
+    temp_dir = Path(tempfile.gettempdir()) / f"s3_{dataset_id}"
     temp_dir.mkdir(parents=True, exist_ok=True)
     temp_file = temp_dir / filename
-    
+
     try:
         await download_file_from_s3_async(
-            s3_url, 
+            s3_url,
             temp_file,
             aws_access_key_id=config.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=config.AWS_SECRET_KEY
+            aws_secret_access_key=config.AWS_SECRET_KEY,
         )
     except Exception as e:
-        error_msg = str(e)
-        print(f"[ERROR] S3 download failed for {filename}: {error_msg}")
-        
-        # S3 404 errors should return 400 (Bad Request), not 500
-        if "404" in error_msg or "Not Found" in error_msg:
-            raise HTTPException(status_code=400, detail=f"File not found in S3: {s3_url}")
-        else:
-            raise HTTPException(status_code=500, detail=f"Failed to download file: {error_msg}")
-    
-    # Move to final location using storage abstraction
+        temp_file.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Failed to download file from S3: {str(e)}")
+
+    # Move to permanent storage
     try:
-        with open(temp_file, 'rb') as f:
+        with open(temp_file, "rb") as f:
             file_path = storage.save(f, filename, dataset_id)
-        temp_file.unlink()
+        temp_file.unlink(missing_ok=True)
     except Exception as e:
-        print(f"[ERROR] File save failed for {filename}: {e}")
+        temp_file.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
-    
-    # Create document record (handles dataset validation, hash, duplicate check, insert)
+
+    # Create document record — identical to local upload (doc_id = content hash)
     try:
         result = _create_document_record(dataset_id, file_path, filename, metadata)
     except ValueError as e:
@@ -230,8 +292,12 @@ async def upload_from_s3(
     except Exception as e:
         print(f"[ERROR] Document record creation failed for {filename}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create document record: {str(e)}")
-    
-    message = "File already exists, reusing existing document" if result["is_duplicate"] else "File uploaded successfully"
+
+    message = (
+        "File already exists, reusing existing document"
+        if result["is_duplicate"]
+        else "File downloaded from S3 and registered successfully"
+    )
     return ApiResponse(success=True, code=200, message=message, data=result)
 
 
@@ -244,18 +310,18 @@ async def create_task(
     """Create a processing task for an existing document."""
     conn = get_connection()
     cursor = conn.cursor()
-    
+
     # Check if document exists
     cursor.execute(
         "SELECT * FROM documents WHERE id = ? AND dataset_id = ?",
         (doc_id, dataset_id)
     )
     doc = cursor.fetchone()
-    
+
     if not doc:
         conn.close()
         raise HTTPException(status_code=404, detail="Document not found")
-    
+
     # Parse document metadata
     doc_metadata = json.loads(doc["metadata"]) if "metadata" in doc.keys() and doc["metadata"] else None
     
@@ -509,31 +575,35 @@ def get_document(dataset_id: str, doc_id: str):
     # Parse document metadata
     doc_metadata = json.loads(row["metadata"]) if "metadata" in row.keys() and row["metadata"] else None
     
-    # Generate file_url for distributed worker access
-    # Normalize path for cross-platform compatibility
-    raw_path = row["file_path"].replace("\\", "/")
-    file_path = Path(raw_path)
-    
-    # Make path absolute if it's relative
-    if not file_path.is_absolute():
-        file_path = Path.cwd() / file_path
-    
-    file_path = file_path.resolve()
-    
-    # Convert to relative path from UPLOAD_DIR
-    storage = get_storage()
-    base_dir = Path(storage.base_dir).resolve()
-    
-    try:
-        rel_path = file_path.relative_to(base_dir)
-        # Convert to POSIX format for URL
-        rel_path_url = rel_path.as_posix()
-        
-        # Use API_PUBLIC_HOST for distributed workers
-        file_url = f"http://{config.API_PUBLIC_HOST}:{config.API_PORT}/files/{rel_path_url}"
-    except ValueError:
-        # If file_path is not under base_dir, file_url is None
-        file_url = None
+    # Build file_url for the worker to fetch the file
+    stored_path = row["file_path"]
+
+    if stored_path.startswith("s3://"):
+        # S3-hosted file: the worker downloads it directly from S3
+        file_url = stored_path
+    else:
+        # Local file: expose through the API's /files/ endpoint
+        # Normalize path for cross-platform compatibility
+        raw_path = stored_path.replace("\\", "/")
+        file_path = Path(raw_path)
+
+        # Make path absolute if it's relative
+        if not file_path.is_absolute():
+            file_path = Path.cwd() / file_path
+
+        file_path = file_path.resolve()
+
+        # Convert to relative path from UPLOAD_DIR
+        storage = get_storage()
+        base_dir = Path(storage.base_dir).resolve()
+
+        try:
+            rel_path = file_path.relative_to(base_dir)
+            rel_path_url = rel_path.as_posix()
+            file_url = f"http://{config.API_PUBLIC_HOST}:{config.API_PORT}/files/{rel_path_url}"
+        except ValueError:
+            # file_path is not under base_dir
+            file_url = None
     
     data = DocumentResponse(
         doc_id=str(row["id"]),
@@ -554,6 +624,76 @@ def get_document(dataset_id: str, doc_id: str):
     )
     
     return ApiResponse(success=True, code=200, data=data)
+
+
+@router.patch("/{doc_id}", response_model=ApiResponse[DocumentResponse])
+async def update_document(
+    dataset_id: str,
+    doc_id: str,
+    metadata: str = Body(..., embed=True)
+):
+    """Update document metadata."""
+    # Validate metadata first
+    try:
+        metadata_dict = _validate_metadata(metadata)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # Check if document exists
+    cursor.execute(
+        "SELECT * FROM documents WHERE id = ? AND dataset_id = ?",
+        (doc_id, dataset_id)
+    )
+    row = cursor.fetchone()
+
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Update metadata
+    timestamp = now()
+    metadata_json = json.dumps(metadata_dict)
+
+    cursor.execute(
+        "UPDATE documents SET metadata = ?, updated_at = ? WHERE id = ?",
+        (metadata_json, timestamp, doc_id)
+    )
+    conn.commit()
+
+    # Fetch updated record
+    cursor.execute(
+        "SELECT * FROM documents WHERE id = ?",
+        (doc_id,)
+    )
+    updated = cursor.fetchone()
+    conn.close()
+
+    doc_metadata = json.loads(updated["metadata"]) if updated["metadata"] else None
+
+    return ApiResponse(
+        success=True,
+        code=200,
+        message="Document updated successfully",
+        data=DocumentResponse(
+            doc_id=str(updated["id"]),
+            dataset_id=str(updated["dataset_id"]),
+            file_name=updated["file_name"],
+            file_path=updated["file_path"],
+            workspace_dir=updated["workspace_dir"],
+            file_size=updated["file_size"],
+            file_type=updated["file_type"],
+            file_hash=updated["file_hash"],
+            metadata=doc_metadata,
+            status=updated["status"],
+            task_id=str(updated["task_id"]) if updated["task_id"] else None,
+            unit_count=updated["unit_count"],
+            created_at=updated["created_at"],
+            updated_at=updated["updated_at"]
+        )
+    )
 
 
 @router.delete("/{doc_id}", response_model=ApiResponse[MessageResponse])

@@ -23,7 +23,7 @@ router = APIRouter(prefix="/datasets", tags=["datasets"])
 # ---------------------------------------------------------------------------
 # Catalog cache - per dataset_id, refreshed every CATALOG_TTL seconds
 # ---------------------------------------------------------------------------
-CATALOG_TTL = 600  # 10 minutes
+CATALOG_TTL = 3600  # 1 hour
 _catalog_cache: TTLCache = TTLCache(maxsize=100, ttl=CATALOG_TTL)
 _catalog_lock = threading.RLock()
 

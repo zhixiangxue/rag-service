@@ -127,3 +127,9 @@ FALKORDB_PORT = int(require_env("FALKORDB_PORT", "6379"))
 # HuggingFace Configuration
 # ============================================
 HF_ENDPOINT = require_env("HF_ENDPOINT", "https://hf-mirror.com")
+
+# ============================================
+# AWS S3 Configuration (used by task_processor to download S3-hosted files)
+# ============================================
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")

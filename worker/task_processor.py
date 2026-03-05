@@ -73,15 +73,35 @@ async def download_file(file_url: str, dest_path: Path) -> None:
     async with httpx.AsyncClient(timeout=300.0) as client:
         response = await client.get(file_url)
         response.raise_for_status()
-        
+
         # Create parent directory if not exists
         dest_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Write file
         with open(dest_path, 'wb') as f:
             f.write(response.content)
-    
+
     console.print(f"[green]File downloaded to: {dest_path}[/green]")
+
+
+def download_file_from_s3(s3_url: str, dest_path: Path) -> None:
+    """Download file from an S3 URL (s3://bucket/key) to local path."""
+    import boto3
+
+    console.print(f"[dim]Downloading S3 file: {s3_url}[/dim]")
+
+    url_parts = s3_url[5:].split('/', 1)
+    bucket_name = url_parts[0]
+    object_key = url_parts[1]
+
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=config.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=config.AWS_SECRET_KEY,
+    )
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    s3_client.download_file(bucket_name, object_key, str(dest_path))
+    console.print(f"[green]S3 file downloaded to: {dest_path}[/green]")
 
 
 async def process_single_task(task: Dict[str, Any]) -> int:
@@ -126,7 +146,10 @@ async def process_single_task(task: Dict[str, Any]) -> int:
         file_path = temp_dir / doc_info["file_name"]
         
         try:
-            await download_file(file_url, file_path)
+            if file_url.startswith("s3://"):
+                download_file_from_s3(file_url, file_path)
+            else:
+                await download_file(file_url, file_path)
         except Exception as e:
             raise RuntimeError(f"Failed to download file: {e}")
         
