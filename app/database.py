@@ -111,6 +111,25 @@ def init_db():
             FOREIGN KEY (doc_id) REFERENCES documents(id)
         )
     """)
+
+    # Dependencies table - rules for auto-expanding doc_ids during retrieval
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS dependencies (
+            id TEXT PRIMARY KEY,
+            dataset_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            target_doc_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (dataset_id) REFERENCES datasets(id),
+            FOREIGN KEY (target_doc_id) REFERENCES documents(id)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_dependencies_dataset_source
+            ON dependencies(dataset_id, source)
+    """)
     
     conn.commit()
     conn.close()

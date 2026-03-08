@@ -2,10 +2,6 @@
 from fastapi import APIRouter, HTTPException
 from typing import Dict, List
 import json
-import threading
-
-from cachetools import TTLCache
-from cachetools.keys import hashkey
 
 from ..database import get_connection, now, generate_id
 from ..schemas import (
@@ -20,143 +16,43 @@ from ..constants import TaskStatus
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
-# ---------------------------------------------------------------------------
-# Catalog cache - per dataset_id, refreshed every CATALOG_TTL seconds
-# ---------------------------------------------------------------------------
-CATALOG_TTL = 3600  # 1 hour
-_catalog_cache: TTLCache = TTLCache(maxsize=100, ttl=CATALOG_TTL)
-_catalog_lock = threading.RLock()
 
-
-def _build_catalog(dataset_id: str, collection_name: str) -> Dict[str, Dict[str, str]]:
-    """
-    Scroll the entire Qdrant collection and build a lender → {doc_id: file_name} map.
-
-    Only fetches doc_id + metadata payload (no content, no vectors) to minimise
-    bandwidth. Deduplicates by doc_id so each document appears exactly once.
-    """
-    from qdrant_client import QdrantClient
-    from .. import config
-
-    client = QdrantClient(
-        host=config.VECTOR_STORE_HOST,
-        port=config.VECTOR_STORE_PORT,
-        grpc_port=config.VECTOR_STORE_GRPC_PORT,
-        prefer_grpc=True,
-        timeout=30,  # 30s per individual scroll call
-    )
-
-    catalog: Dict[str, Dict[str, str]] = {}
-    seen_doc_ids: set = set()
-    offset = None
-
-    while True:
-        results, next_offset = client.scroll(
-            collection_name=collection_name,
-            offset=offset,
-            limit=1000,
-            # Fetch only what we need - avoids transferring content/embedding fields
-            with_payload=["doc_id", "metadata"],
-            with_vectors=False,
-        )
-
-        for point in results:
-            payload = point.payload or {}
-            doc_id = payload.get("doc_id")
-
-            # Skip if no doc_id or already processed this document
-            if not doc_id or doc_id in seen_doc_ids:
-                continue
-            seen_doc_ids.add(doc_id)
-
-            metadata = payload.get("metadata") or {}
-            custom = metadata.get("custom") or {}
-            document = metadata.get("document") or {}
-
-            lender = custom.get("lender")
-            file_name = document.get("file_name") or doc_id
-            tags = custom.get("tags") or []
-
-            # Skip units without a known lender
-            if not lender:
-                continue
-
-            # Build display value: "file_name, tags: tag1, tag2" (or just file_name if no tags)
-            if tags and isinstance(tags, list):
-                display_value = f"{file_name}, tags: {', '.join(str(t) for t in tags)}"
-            else:
-                display_value = file_name
-
-            if lender not in catalog:
-                catalog[lender] = {}
-            catalog[lender][doc_id] = display_value
-
-        if not next_offset:
-            break
-        offset = next_offset
-
-    return catalog
-
-
-def _get_catalog(dataset_id: str) -> Dict[str, Dict[str, str]]:
-    """Return catalog from cache, rebuilding if stale."""
-    import concurrent.futures
-    from .. import config
-
-    # Resolve collection_name first so cache key is stable regardless of dataset_id
+def _build_catalog_from_db(dataset_id: str) -> Dict[str, Dict[str, str]]:
+    """Build lender → {doc_id: file_name} catalog directly from SQLite documents table."""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT name FROM datasets WHERE id = ?", (dataset_id,))
-    row = cursor.fetchone()
+    cursor.execute(
+        "SELECT id, file_name, metadata FROM documents WHERE dataset_id = ?",
+        (dataset_id,)
+    )
+    rows = cursor.fetchall()
     conn.close()
 
-    if not row:
-        if config.DEFAULT_COLLECTION_NAME:
-            collection_name = config.DEFAULT_COLLECTION_NAME
+    catalog: Dict[str, Dict[str, str]] = {}
+    for row in rows:
+        meta = json.loads(row["metadata"]) if row["metadata"] else {}
+        lender = meta.get("lender")
+        if not lender:
+            continue
+        tags = meta.get("tags") or []
+        file_name = row["file_name"]
+        if tags and isinstance(tags, list):
+            display_value = f"{file_name}, tags: {', '.join(str(t) for t in tags)}"
         else:
-            raise HTTPException(status_code=404, detail="Dataset not found")
-    else:
-        collection_name = row["name"]
-
-    # Cache keyed on collection_name so warmup and API requests share the same entry
-    cache_key = hashkey(collection_name)
-    with _catalog_lock:
-        if cache_key in _catalog_cache:
-            print(f"[Catalog] Cache HIT for collection {collection_name}")
-            return _catalog_cache[cache_key]
-
-    print(f"[Catalog] Cache MISS for collection {collection_name}, building...")
-
-    # Run build in a thread with an overall timeout to avoid hanging forever
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_build_catalog, dataset_id, collection_name)
-        try:
-            catalog = future.result(timeout=120)  # 2 minutes max
-        except concurrent.futures.TimeoutError:
-            future.cancel()
-            raise HTTPException(
-                status_code=504,
-                detail="Catalog build timed out. The collection may be too large. Try again later.",
-            )
-
-    with _catalog_lock:
-        _catalog_cache[cache_key] = catalog
+            display_value = file_name
+        if lender not in catalog:
+            catalog[lender] = {}
+        catalog[lender][row["id"]] = display_value
 
     return catalog
 
-# Import cache invalidation function (will be available after query module loads)
-_invalidate_cache_fn = None
-
-def _get_cache_invalidator():
-    """Lazy load cache clear function to avoid circular import."""
-    global _invalidate_cache_fn
-    if _invalidate_cache_fn is None:
-        try:
-            from .query import clear_dataset_cache
-            _invalidate_cache_fn = clear_dataset_cache
-        except ImportError:
-            pass
-    return _invalidate_cache_fn
+def _invalidate_query_cache(dataset_id: str):
+    """Invalidate query cache for a dataset."""
+    try:
+        from .query import clear_dataset_cache
+        clear_dataset_cache(dataset_id)
+    except Exception:
+        pass
 
 
 @router.post("", response_model=ApiResponse[DatasetResponse])
@@ -369,14 +265,10 @@ def list_dataset_tasks(dataset_id: str):
 
 
 @router.get("/{dataset_id}/catalog", response_model=ApiResponse[Dict[str, Dict[str, str]]])
-def get_dataset_catalog(dataset_id: str, refresh: bool = False):
+def get_dataset_catalog(dataset_id: str):
     """Return a lender → {doc_id: file_name} catalog for the dataset.
 
-    The result is cached for 10 minutes (CATALOG_TTL). On cache miss the collection
-    is scrolled once and the result stored; subsequent requests within the TTL window
-    return the cached value immediately.
-
-    Response shape:
+    Reads directly from the SQLite documents table. Response shape:
         {
             "JMAC Lending": {
                 "abc123": "DSCR_Prime_v2.pdf",
@@ -387,22 +279,17 @@ def get_dataset_catalog(dataset_id: str, refresh: bool = False):
             }
         }
     """
+    # Verify dataset exists
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM datasets WHERE id = ?", (dataset_id,))
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    conn.close()
+
     try:
-        if refresh:
-            # Resolve collection_name to invalidate the right cache entry
-            from .. import config as _cfg
-            _conn = get_connection()
-            _cursor = _conn.cursor()
-            _cursor.execute("SELECT name FROM datasets WHERE id = ?", (dataset_id,))
-            _row = _cursor.fetchone()
-            _conn.close()
-            _coll = (_row["name"] if _row else None) or _cfg.DEFAULT_COLLECTION_NAME
-            if _coll:
-                with _catalog_lock:
-                    _catalog_cache.pop(hashkey(_coll), None)
-        catalog = _get_catalog(dataset_id)
-    except HTTPException:
-        raise
+        catalog = _build_catalog_from_db(dataset_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to build catalog: {str(e)}")
 
@@ -456,11 +343,9 @@ def update_dataset(dataset_id: str, dataset: DatasetUpdate):
     )
     conn.commit()
     
-    # Invalidate cache
-    invalidate_fn = _get_cache_invalidator()
-    if invalidate_fn:
-        invalidate_fn(dataset_id)
-    
+    # Invalidate query cache
+    _invalidate_query_cache(dataset_id)
+
     # Fetch updated dataset
     cursor.execute("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
     row = cursor.fetchone()
@@ -525,11 +410,9 @@ def delete_dataset(dataset_id: str):
         # Log but don't fail the API call (collection might not exist)
         print(f"Warning: Failed to delete vector collection {collection_name}: {e}")
     
-    # Invalidate cache
-    invalidate_fn = _get_cache_invalidator()
-    if invalidate_fn:
-        invalidate_fn(dataset_id)
-    
+    # Invalidate query cache
+    _invalidate_query_cache(dataset_id)
+
     return ApiResponse(
         success=True,
         code=200,
