@@ -105,6 +105,12 @@ AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
 
 # ============================================
+# PDF Cache Configuration
+# ============================================
+# Directory for cached PDF parsing results (from MinerUReader)
+PDF_CACHE_DIR = os.getenv("PDF_CACHE_DIR", str(Path.home() / ".zag" / "cache" / "readers" / "mineru"))
+
+# ============================================
 # API Server Configuration
 # ============================================
 API_HOST = require_env("API_HOST")

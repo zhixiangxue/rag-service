@@ -23,6 +23,7 @@ from ..config import (
     EMBEDDING_URI, OPENAI_API_KEY,
     VECTOR_STORE_HOST, VECTOR_STORE_PORT,
     MEILISEARCH_HOST, MEILISEARCH_API_KEY,
+    PDF_CACHE_DIR,
 ) 
 
 console = Console()
@@ -185,8 +186,7 @@ async def index_lod(
     console.print("  ✅ Headings corrected")
     
     # Dump to cache for reuse
-    cache_dir = Path.home() / ".zag" / "cache" / "readers" / "mineru"
-    archive_path = doc.dump(cache_dir)
+    archive_path = doc.dump(PDF_CACHE_DIR)
     console.print(f"  💾 Cached: {archive_path}")
 
     lod_full = doc.content

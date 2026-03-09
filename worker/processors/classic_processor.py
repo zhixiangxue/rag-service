@@ -48,7 +48,7 @@ from zag.schemas.unit import TextUnit, TableUnit
 from zag.utils.hash import calculate_file_hash
 
 from ..constants import ProcessingMode
-from ..config import LLM_PROVIDER, LLM_MODEL, LLM_API_KEY
+from ..config import LLM_PROVIDER, LLM_MODEL, LLM_API_KEY, PDF_CACHE_DIR
 
 console = Console()
 
@@ -400,7 +400,8 @@ class ClassicDocumentProcessor:
         # Dump to cache for reuse (best effort, failure is acceptable)
         try:
             console.print(f"\n💾 Caching document...")
-            archive_path = self.document.dump(self.cache_dir)
+            # Use global PDF_CACHE_DIR for consistency with LOD mode
+            archive_path = self.document.dump(PDF_CACHE_DIR)
             console.print(f"   ✅ Cached: {archive_path}")
         except Exception as e:
             console.print(

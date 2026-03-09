@@ -18,6 +18,10 @@ from ..schemas import (
     TaskResponse,
     ProcessingMode,
     _extract_tags,
+    LocatePageRequest,
+    LocatePageResult,
+    LocatePageResponse,
+    CacheUploadResponse,
 )
 from ..storage import get_storage
 from ..constants import TaskStatus, DocumentStatus
@@ -770,4 +774,230 @@ def delete_document(dataset_id: str, doc_id: str):
         code=200,
         message="Document deleted successfully",
         data=MessageResponse(message="Document deleted successfully")
+    )
+
+
+@router.post("/{doc_id}/cache", response_model=ApiResponse[CacheUploadResponse])
+async def upload_document_cache(
+    dataset_id: str,
+    doc_id: str,
+    file: UploadFile = File(...),
+):
+    """
+    Upload PDF parsing cache from worker.
+    
+    Worker calls this after processing a PDF to upload the cache directory.
+    The cache is extracted to PDF_CACHE_DIR/{doc_id}/ for later use by /locate API.
+    
+    Args:
+        file: tar.gz archive of the cache directory
+        
+    Returns:
+        Cache upload confirmation with path and size
+    """
+    import tarfile
+    import shutil
+    
+    # Validate file type
+    if not file.filename.endswith('.tar.gz'):
+        raise HTTPException(status_code=400, detail="File must be a .tar.gz archive")
+    
+    # Prepare cache directory
+    cache_dir = Path(config.PDF_CACHE_DIR) / doc_id
+    
+    # Remove existing cache if present
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir)
+    
+    # Save uploaded file to temp location
+    temp_file = Path(tempfile.gettempdir()) / f"cache_{doc_id}.tar.gz"
+    try:
+        with open(temp_file, "wb") as f:
+            content = await file.read()
+            f.write(content)
+        
+        # Extract archive
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(temp_file, "r:gz") as tar:
+            tar.extractall(path=cache_dir)
+        
+        # Calculate size
+        total_size = sum(f.stat().st_size for f in cache_dir.rglob('*') if f.is_file())
+        
+        return ApiResponse(
+            success=True,
+            code=200,
+            message="Cache uploaded successfully",
+            data=CacheUploadResponse(
+                doc_id=doc_id,
+                cache_path=str(cache_dir),
+                size_bytes=total_size,
+                message=f"Cache extracted to {cache_dir}"
+            )
+        )
+    except Exception as e:
+        # Cleanup on error
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir)
+        raise HTTPException(status_code=500, detail=f"Failed to process cache: {str(e)}")
+    finally:
+        # Cleanup temp file
+        temp_file.unlink(missing_ok=True)
+
+
+@router.post("/locate", response_model=ApiResponse[LocatePageResponse])
+async def locate_pages(
+    dataset_id: str,
+    request: LocatePageRequest = Body(...),
+):
+    """
+    Locate page numbers for text snippets.
+    
+    Batch API that accepts multiple items, each with doc_id + text_start (+ optional text_end).
+    Returns page numbers for each item.
+    
+    Performance:
+    - Concurrent PDF loading for different docs
+    - Concurrent text search within each PDF
+    """
+    import asyncio
+    from collections import defaultdict
+    from concurrent.futures import ThreadPoolExecutor
+    
+    from zag.schemas.pdf import PDF
+    from zag.utils.page_inference import fuzzy_find_start
+    
+    # Cache directory for PDF parsing results
+    cache_dir = Path(config.PDF_CACHE_DIR)
+    
+    # Group items by doc_id for efficient processing
+    doc_groups: dict[str, list] = defaultdict(list)
+    for item in request.items:
+        doc_groups[item.doc_id].append(item)
+    
+    def find_pages_for_text(pdf: PDF, text_start: str, text_end: str = None) -> tuple[list[int] | None, bool]:
+        """
+        Find page numbers for a text snippet.
+        
+        Returns:
+            (page_numbers, found)
+        """
+        # Find start position
+        # Search entire document (no range limit for correctness)
+        start_pos = fuzzy_find_start(text_start, pdf.content, start_from=0, threshold=0.80)
+        
+        if start_pos is None:
+            return None, False
+        
+        # Determine end position
+        if text_end:
+            end_pos = fuzzy_find_start(text_end, pdf.content, start_from=start_pos + len(text_start), threshold=0.80, max_search_range=100000)
+            if end_pos is None:
+                # Fallback: estimate length from text_start
+                end_pos = start_pos + len(text_start)
+            else:
+                end_pos = end_pos + len(text_end)
+        else:
+            end_pos = start_pos + len(text_start)
+        
+        # Build page positions
+        page_positions = []
+        current_pos = 0
+        
+        for page in pdf.pages:
+            page_content = page.content or ""
+            if not page_content.strip():
+                page_positions.append((current_pos, current_pos, page.page_number))
+                continue
+            
+            # Find page in full content
+            page_sig = page_content[:50] if len(page_content) > 50 else page_content
+            pos = pdf.content.find(page_sig, current_pos)
+            
+            if pos != -1:
+                page_positions.append((pos, pos + len(page_content), page.page_number))
+                current_pos = pos + 1
+            else:
+                page_positions.append((current_pos, current_pos + len(page_content), page.page_number))
+                current_pos += len(page_content) + 1
+        
+        # Find overlapping pages
+        overlapping = []
+        for page_start, page_end, page_num in page_positions:
+            if not (end_pos <= page_start or start_pos >= page_end):
+                overlapping.append(page_num)
+        
+        return sorted(overlapping) if overlapping else None, True
+    
+    def process_single_doc(doc_id: str, items: list) -> list[LocatePageResult]:
+        """Process all items for a single document."""
+        results = []
+        
+        # Load PDF
+        doc_cache_dir = cache_dir / doc_id
+        if not doc_cache_dir.exists():
+            for item in items:
+                results.append(LocatePageResult(
+                    request_id=item.request_id,
+                    doc_id=doc_id,
+                    page_numbers=None,
+                    found=False,
+                    error=f"Document cache not found: {doc_id}"
+                ))
+            return results
+        
+        try:
+            pdf = PDF.load(doc_cache_dir)
+        except Exception as e:
+            for item in items:
+                results.append(LocatePageResult(
+                    request_id=item.request_id,
+                    doc_id=doc_id,
+                    page_numbers=None,
+                    found=False,
+                    error=f"Failed to load document: {str(e)}"
+                ))
+            return results
+        
+        # Process all items for this doc
+        for item in items:
+            try:
+                page_numbers, found = find_pages_for_text(pdf, item.text_start, item.text_end)
+                results.append(LocatePageResult(
+                    request_id=item.request_id,
+                    doc_id=doc_id,
+                    page_numbers=page_numbers,
+                    found=found,
+                    error=None if found else "Text not found in document"
+                ))
+            except Exception as e:
+                results.append(LocatePageResult(
+                    request_id=item.request_id,
+                    doc_id=doc_id,
+                    page_numbers=None,
+                    found=False,
+                    error=f"Search error: {str(e)}"
+                ))
+        
+        return results
+    
+    # Process all docs concurrently
+    loop = asyncio.get_event_loop()
+    
+    with ThreadPoolExecutor() as executor:
+        futures = [
+            loop.run_in_executor(executor, process_single_doc, doc_id, items)
+            for doc_id, items in doc_groups.items()
+        ]
+        all_results = await asyncio.gather(*futures)
+    
+    # Flatten results
+    results = []
+    for doc_results in all_results:
+        results.extend(doc_results)
+    
+    return ApiResponse(
+        success=True,
+        code=200,
+        data=LocatePageResponse(results=results)
     )

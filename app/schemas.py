@@ -234,3 +234,42 @@ class DatasetStats(BaseModel):
     document_count: int
     unit_count: int
     last_ingest_time: Optional[str] = None
+
+
+# ============ Cache Upload ============
+
+class CacheUploadResponse(BaseModel):
+    """Response for cache upload."""
+    doc_id: str
+    cache_path: str
+    size_bytes: int
+    message: str
+
+
+# ============ Page Location ============
+
+class LocatePageItem(BaseModel):
+    """Single item in page location request."""
+    request_id: str = Field(..., description="Caller-provided ID, returned as-is for correlation")
+    doc_id: str = Field(..., description="Document ID")
+    text_start: str = Field(..., description="Beginning of the text snippet")
+    text_end: Optional[str] = Field(None, description="End of the text snippet (optional)")
+
+
+class LocatePageRequest(BaseModel):
+    """Batch page location request."""
+    items: List[LocatePageItem] = Field(..., min_length=1)
+
+
+class LocatePageResult(BaseModel):
+    """Result for a single locate request."""
+    request_id: str
+    doc_id: str
+    page_numbers: Optional[List[int]] = None
+    found: bool
+    error: Optional[str] = None
+
+
+class LocatePageResponse(BaseModel):
+    """Batch page location response."""
+    results: List[LocatePageResult]

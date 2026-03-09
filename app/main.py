@@ -70,6 +70,8 @@ if __name__ == "__main__":
         print("=" * 60)
         print(f"\n[Database]")
         print(f"  DATABASE_PATH: {os.path.abspath(config.DATABASE_PATH)}")
+        print(f"\n[PDF Cache]")
+        print(f"  PDF_CACHE_DIR: {os.path.abspath(config.PDF_CACHE_DIR)}")
         print(f"\n[Vector Store]")
         print(f"  VECTOR_STORE_TYPE: {config.VECTOR_STORE_TYPE}")
         print(f"  VECTOR_STORE_HOST: {config.VECTOR_STORE_HOST}")

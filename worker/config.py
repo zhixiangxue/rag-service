@@ -133,3 +133,10 @@ HF_ENDPOINT = require_env("HF_ENDPOINT", "https://hf-mirror.com")
 # ============================================
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
+
+# ============================================
+# PDF Cache Configuration
+# ============================================
+# Directory for cached PDF parsing results (from MinerUReader)
+# Worker reads from here and uploads to RAG server
+PDF_CACHE_DIR = Path(os.getenv("PDF_CACHE_DIR", str(Path.home() / ".zag" / "cache" / "readers" / "mineru")))
