@@ -819,7 +819,7 @@ async def upload_document_cache(
         # Extract archive
         cache_dir.mkdir(parents=True, exist_ok=True)
         with tarfile.open(temp_file, "r:gz") as tar:
-            tar.extractall(path=cache_dir)
+            tar.extractall(path=Path(config.PDF_CACHE_DIR))
         
         # Calculate size
         total_size = sum(f.stat().st_size for f in cache_dir.rglob('*') if f.is_file())
