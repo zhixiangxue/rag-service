@@ -190,7 +190,7 @@ class UnitBatchUpdate(BaseModel):
 
 class QueryRequest(BaseModel):
     query: str
-    top_k: int = Field(default=5, ge=1, le=100)
+    top_k: int = Field(default=5, ge=1, le=200)
     filters: Optional[Dict[str, Any]] = None
     fulltext_query: Optional[str] = None  # Caller-provided keyword query for BM25; auto-rewritten if absent
     min_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)  # Filter out units below this reranker score
