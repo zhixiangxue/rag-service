@@ -37,9 +37,9 @@ def _build_catalog_from_db(dataset_id: str) -> Dict[str, Dict[str, str]]:
         tags = meta.get("tags") or []
         file_name = row["file_name"]
         if tags and isinstance(tags, list):
-            display_value = f"{file_name}, tags: {', '.join(str(t) for t in tags)}"
+            display_value = f"lender: {lender} | program/guideline: {file_name} | tags: {', '.join(str(t) for t in tags)}"
         else:
-            display_value = file_name
+            display_value = f"lender: {lender} | program/guideline: {file_name}"
         if lender not in catalog:
             catalog[lender] = {}
         catalog[lender][row["id"]] = display_value
