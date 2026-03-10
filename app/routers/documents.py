@@ -915,57 +915,201 @@ async def locate_pages(
         
         return sorted(overlapping) if overlapping else None, True
     
-    def process_single_doc(doc_id: str, items: list) -> list[LocatePageResult]:
-        """Process all items for a single document."""
-        results = []
-        
-        # Load PDF
-        doc_cache_dir = cache_dir / doc_id
-        if not doc_cache_dir.exists():
-            for item in items:
-                results.append(LocatePageResult(
-                    request_id=item.request_id,
-                    doc_id=doc_id,
-                    page_numbers=None,
-                    found=False,
-                    error=f"Document cache not found: {doc_id}"
-                ))
-            return results
-        
+    def find_pages_in_pdf(pdf_path: str, text_start: str, text_end: str = None) -> tuple[list[int] | None, bool]:
+        """
+        Search directly in the PDF file for accurate page numbers.
+        Uses PyMuPDF (fitz) for fast text extraction with early termination.
+        """
+        import fitz
+        from zag.utils.page_inference import normalize_text
+
+        norm_start = normalize_text(text_start)
+        norm_end = normalize_text(text_end) if text_end else None
+
+        full_text = ""
+        page_positions = []
+        current = 0
+        start_pos = None
+        end_pos = None
+        search_from = 0  # incremental search, avoid re-scanning old pages
+
+        doc = fitz.open(pdf_path)
         try:
-            pdf = PDF.load(doc_cache_dir)
-        except Exception as e:
-            for item in items:
-                results.append(LocatePageResult(
-                    request_id=item.request_id,
-                    doc_id=doc_id,
-                    page_numbers=None,
-                    found=False,
-                    error=f"Failed to load document: {str(e)}"
-                ))
-            return results
-        
-        # Process all items for this doc
-        for item in items:
+            for page in doc:
+                page_num = page.number + 1
+                norm = normalize_text(page.get_text())
+
+                page_start = current
+                page_end = current + len(norm)
+                page_positions.append((page_start, page_end, page_num))
+                full_text += ("\n" if full_text else "") + norm
+                current = page_end + 1
+
+                # Early scanned-PDF detection after 3 pages
+                if page_num == 3 and len(full_text) / 3 < 50:
+                    return None, False  # fallback to MinerU cache
+
+                # Search only the newly added portion
+                if start_pos is None:
+                    found = fuzzy_find_start(norm_start, full_text, start_from=search_from, threshold=0.80)
+                    if found is not None:
+                        start_pos = found
+                    else:
+                        search_from = max(0, len(full_text) - len(norm_start) - 10)
+
+                if start_pos is not None:
+                    if norm_end:
+                        found_end = fuzzy_find_start(
+                            norm_end, full_text,
+                            start_from=start_pos + len(norm_start),
+                            threshold=0.80,
+                            max_search_range=100000,
+                        )
+                        if found_end is not None:
+                            end_pos = found_end + len(norm_end)
+                            break
+                    else:
+                        end_pos = start_pos + len(norm_start)
+                        break
+        finally:
+            doc.close()
+
+        if start_pos is None:
+            return None, False
+
+        if end_pos is None:
+            end_pos = start_pos + len(norm_start)
+
+        overlapping = [
+            pn for ps, pe, pn in page_positions
+            if not (end_pos <= ps or start_pos >= pe)
+        ]
+        return sorted(overlapping) if overlapping else None, True
+
+    def get_pdf_path_for_doc(doc_id: str) -> str | None:
+        """
+        Return a local path to the original PDF for the given doc_id.
+
+        Lookup order:
+        1. PDF_FILES_DIR/{doc_id}*.pdf  – pick the newest by mtime (allows
+           supplementary versions like {doc_id}-text.pdf to shadow the original)
+        2. DB file_path: local path (absolute or relative to rag-service dir)
+        3. S3 download → saved to PDF_FILES_DIR/{doc_id}.pdf for next time
+
+        Never raises – returns None on any failure so callers can fallback safely.
+        """
+        try:
+            from ..utils.s3 import download_file_from_s3
+
+            pdf_files_dir = Path(config.PDF_FILES_DIR)
+
+            # 1. Find all local variants matching {doc_id}*.pdf, pick newest by mtime
+            local_pdf = pdf_files_dir / f"{doc_id}.pdf"  # default target for S3 download
+            if pdf_files_dir.exists():
+                candidates = sorted(
+                    pdf_files_dir.glob(f"{doc_id}*.pdf"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                if candidates:
+                    return str(candidates[0])
+
+            # 2. Get file_path from DB
+            conn = get_connection()
             try:
-                page_numbers, found = find_pages_for_text(pdf, item.text_start, item.text_end)
-                results.append(LocatePageResult(
+                cursor = conn.execute("SELECT file_path FROM documents WHERE id = ?", (doc_id,))
+                row = cursor.fetchone()
+                if not row or not row["file_path"]:
+                    return None
+                file_path = row["file_path"]
+            finally:
+                conn.close()
+
+            if file_path.startswith("s3://"):
+                # 3. Download from S3 and cache locally
+                pdf_files_dir.mkdir(parents=True, exist_ok=True)
+                ok = download_file_from_s3(file_path, local_pdf)
+                return str(local_pdf) if ok else None
+            else:
+                # Local path: try as-is first, then relative to rag-service dir
+                p = Path(file_path)
+                if p.is_absolute():
+                    return str(p) if p.exists() else None
+                # Relative path – resolve against the rag-service directory
+                resolved = (config.RAG_SERVICE_DIR / p).resolve()
+                return str(resolved) if resolved.exists() else None
+        except Exception:
+            return None
+
+    def process_single_doc(doc_id: str, items: list) -> list[LocatePageResult]:
+        """Process all items for a single document. Never raises."""
+        try:
+            results = []
+
+            # Try to get the actual PDF for accurate page lookup
+            pdf_path = get_pdf_path_for_doc(doc_id)  # always returns None on failure
+
+            # Preload MinerU cache only if needed
+            doc_cache_dir = cache_dir / doc_id
+            pdf = None
+
+            # Process all items for this doc
+            for item in items:
+                try:
+                    page_numbers, found = None, False
+
+                    # Primary: direct PDF search
+                    if pdf_path:
+                        page_numbers, found = find_pages_in_pdf(
+                            pdf_path, item.text_start, item.text_end
+                        )
+
+                    # Fallback: MinerU cache
+                    if not found and doc_cache_dir.exists():
+                        if pdf is None:
+                            try:
+                                pdf = PDF.load(doc_cache_dir)
+                            except Exception:
+                                pdf = None
+                        if pdf is not None:
+                            page_numbers, found = find_pages_for_text(
+                                pdf, item.text_start, item.text_end
+                            )
+
+                    # Last resort: return page 1 rather than leaving caller empty
+                    if not found:
+                        page_numbers = [1]
+
+                    results.append(LocatePageResult(
+                        request_id=item.request_id,
+                        doc_id=doc_id,
+                        page_numbers=page_numbers,
+                        found=found,
+                        error=None if found else "Text not found; defaulting to page 1",
+                    ))
+                except Exception as e:
+                    # Item-level failure → page 1, never propagate
+                    results.append(LocatePageResult(
+                        request_id=item.request_id,
+                        doc_id=doc_id,
+                        page_numbers=[1],
+                        found=False,
+                        error=f"Search error: {str(e)}",
+                    ))
+
+            return results
+        except Exception as e:
+            # Doc-level failure → all items get page 1
+            return [
+                LocatePageResult(
                     request_id=item.request_id,
                     doc_id=doc_id,
-                    page_numbers=page_numbers,
-                    found=found,
-                    error=None if found else "Text not found in document"
-                ))
-            except Exception as e:
-                results.append(LocatePageResult(
-                    request_id=item.request_id,
-                    doc_id=doc_id,
-                    page_numbers=None,
+                    page_numbers=[1],
                     found=False,
-                    error=f"Search error: {str(e)}"
-                ))
-        
-        return results
+                    error=f"Doc processing error: {str(e)}",
+                )
+                for item in items
+            ]
     
     # Process all docs concurrently
     loop = asyncio.get_event_loop()

@@ -109,6 +109,8 @@ AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
 # ============================================
 # Directory for cached PDF parsing results (from MinerUReader)
 PDF_CACHE_DIR = os.getenv("PDF_CACHE_DIR", str(Path.home() / ".zag" / "cache" / "readers" / "mineru"))
+# Directory where original PDFs are pre-placed as {doc_id}.pdf for fast locate lookup
+PDF_FILES_DIR = os.getenv("PDF_FILES_DIR", str(Path.home() / ".zag" / "cache" / "pdfs"))
 
 # ============================================
 # API Server Configuration
