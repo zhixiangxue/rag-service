@@ -30,25 +30,25 @@ from .. import config
 router = APIRouter(prefix="/datasets/{dataset_id}/documents", tags=["documents"])
 
 
-def _build_file_url(stored_path: str, base_dir: Optional[Path] = None) -> Optional[str]:
+def _build_file_url(stored_path: str, base_dir_str: Optional[str] = None) -> Optional[str]:
     """Build file_url from stored file path (s3:// or local)."""
     if not stored_path:
         return None
     if stored_path.startswith("s3://"):
         return stored_path
-    # Local file: expose through the API's /files/ endpoint
-    raw_path = stored_path.replace("\\", "/")
-    file_path = Path(raw_path)
-    if not file_path.is_absolute():
-        file_path = Path.cwd() / file_path
-    file_path = file_path.resolve()
-    if base_dir is None:
-        base_dir = Path(get_storage().base_dir).resolve()
-    try:
-        rel_path = file_path.relative_to(base_dir)
-        return f"http://{config.API_PUBLIC_HOST}:{config.API_PORT}/files/{rel_path.as_posix()}"
-    except ValueError:
-        return None
+    # Local file: pure string processing, no filesystem calls
+    norm_path = stored_path.replace("\\", "/")
+    if base_dir_str is None:
+        base_dir_str = Path(get_storage().base_dir).resolve().as_posix()
+    # Make absolute if relative
+    if not norm_path.startswith("/"):
+        norm_path = Path.cwd().as_posix() + "/" + norm_path
+    # Strip base_dir prefix to get relative path
+    base = base_dir_str.rstrip("/") + "/"
+    if norm_path.startswith(base):
+        rel_path = norm_path[len(base):]
+        return f"http://{config.API_PUBLIC_HOST}:{config.API_PORT}/files/{rel_path}"
+    return None
 
 
 def _validate_metadata(metadata: Optional[str]) -> dict:
@@ -517,7 +517,10 @@ def list_document_tasks(dataset_id: str, doc_id: str):
 
 
 @router.get("", response_model=ApiResponse[List[DocumentResponse]])
-def list_documents(dataset_id: str, status: Optional[str] = None):
+def list_documents(
+    dataset_id: str,
+    status: Optional[str] = None,
+):
     """List documents in a dataset."""
     conn = get_connection()
     cursor = conn.cursor()
@@ -543,8 +546,8 @@ def list_documents(dataset_id: str, status: Optional[str] = None):
     rows = cursor.fetchall()
     conn.close()
 
-    # Pre-compute base_dir once for all file_url builds
-    base_dir = Path(get_storage().base_dir).resolve()
+    # Pre-compute base_dir_str once for all file_url builds (pure string, no I/O per row)
+    base_dir_str = Path(get_storage().base_dir).resolve().as_posix()
 
     results = []
     for row in rows:
@@ -554,7 +557,7 @@ def list_documents(dataset_id: str, status: Optional[str] = None):
             dataset_id=str(row["dataset_id"]),
             file_name=row["file_name"],
             file_path=row["file_path"],
-            file_url=_build_file_url(row["file_path"], base_dir),
+            file_url=_build_file_url(row["file_path"], base_dir_str),
             workspace_dir=row["workspace_dir"],
             file_size=row["file_size"],
             file_type=row["file_type"],
