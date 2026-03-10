@@ -30,7 +30,7 @@ from .. import config
 router = APIRouter(prefix="/datasets/{dataset_id}/documents", tags=["documents"])
 
 
-def _build_file_url(stored_path: str) -> Optional[str]:
+def _build_file_url(stored_path: str, base_dir: Optional[Path] = None) -> Optional[str]:
     """Build file_url from stored file path (s3:// or local)."""
     if not stored_path:
         return None
@@ -42,8 +42,8 @@ def _build_file_url(stored_path: str) -> Optional[str]:
     if not file_path.is_absolute():
         file_path = Path.cwd() / file_path
     file_path = file_path.resolve()
-    storage = get_storage()
-    base_dir = Path(storage.base_dir).resolve()
+    if base_dir is None:
+        base_dir = Path(get_storage().base_dir).resolve()
     try:
         rel_path = file_path.relative_to(base_dir)
         return f"http://{config.API_PUBLIC_HOST}:{config.API_PORT}/files/{rel_path.as_posix()}"
@@ -107,7 +107,8 @@ def _create_document_record(
     dataset_id: str,
     file_path: str,
     filename: str,
-    metadata: Optional[str] = None
+    metadata: Optional[str] = None,
+    s3_url: Optional[str] = None,
 ) -> dict:
     """
     Create document record after a local file is saved.
@@ -115,9 +116,10 @@ def _create_document_record(
 
     Args:
         dataset_id: Dataset ID
-        file_path: Local path to the saved file
+        file_path: Local path to the saved file (used for hash/size calculation)
         filename: Original filename
         metadata: Optional JSON metadata string
+        s3_url: If provided, stored as file_path in DB instead of local path
 
     Returns:
         dict with doc_id, file_name, file_path, file_hash, and status info
@@ -126,6 +128,8 @@ def _create_document_record(
         ValueError: If metadata is invalid
         HTTPException: If dataset not found (404)
     """
+    # The path actually stored in DB
+    db_path = s3_url if s3_url else file_path
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -140,36 +144,28 @@ def _create_document_record(
 
         # Check for duplicate: same dataset + same file_hash
         cursor.execute(
-            "SELECT id, file_name FROM documents WHERE dataset_id = ? AND file_hash = ?",
+            "SELECT id, file_name, file_path FROM documents WHERE dataset_id = ? AND file_hash = ?",
             (dataset_id, file_hash)
         )
         existing_doc = cursor.fetchone()
 
         if existing_doc:
-            # File already uploaded, check if old file still exists
+            # Duplicate: update file_path to latest and return
             cursor.execute(
-                "SELECT file_path FROM documents WHERE id = ?",
-                (existing_doc['id'],)
+                "UPDATE documents SET file_path = ?, updated_at = ? WHERE id = ?",
+                (db_path, now(), existing_doc['id'])
             )
-            old_doc = cursor.fetchone()
-
-            if old_doc and os.path.exists(old_doc['file_path']):
-                # Old file exists, delete duplicate and reuse existing doc_id
-                os.remove(file_path)
-                return {
-                    "dataset_id": str(dataset_id),
-                    "doc_id": str(existing_doc['id']),
-                    "file_name": existing_doc['file_name'],
-                    "file_hash": file_hash,
-                    "is_duplicate": True
-                }
-            else:
-                # Old file doesn't exist, delete old record and continue with new upload
-                cursor.execute("DELETE FROM documents WHERE id = ?", (existing_doc['id'],))
-                conn.commit()
+            conn.commit()
+            return {
+                "dataset_id": str(dataset_id),
+                "doc_id": str(existing_doc['id']),
+                "file_name": existing_doc['file_name'],
+                "file_hash": file_hash,
+                "is_duplicate": True
+            }
 
         # Extract workspace directory (parent of file)
-        workspace_dir = os.path.dirname(file_path)
+        workspace_dir = os.path.dirname(db_path)
 
         file_size = os.path.getsize(file_path)
         file_type = filename.split(".")[-1] if "." in filename else "unknown"
@@ -190,7 +186,7 @@ def _create_document_record(
                 INSERT INTO documents (id, dataset_id, file_name, file_path, workspace_dir, file_size, file_type, file_hash, metadata, status, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (doc_id, dataset_id, filename, file_path, workspace_dir, file_size, file_type, file_hash, metadata_json, DocumentStatus.PROCESSING, timestamp, timestamp)
+                (doc_id, dataset_id, filename, db_path, workspace_dir, file_size, file_type, file_hash, metadata_json, DocumentStatus.PROCESSING, timestamp, timestamp)
             )
             conn.commit()
 
@@ -198,25 +194,18 @@ def _create_document_record(
                 "dataset_id": str(dataset_id),
                 "doc_id": str(doc_id),
                 "file_name": filename,
-                "file_path": file_path,
+                "file_path": db_path,
                 "file_hash": file_hash,
                 "is_duplicate": False
             }
         except sqlite3.IntegrityError:
-            # UNIQUE constraint violation: duplicate file_hash
-            # This means another request inserted the same file first
+            # Race condition: another request inserted the same file first, just return duplicate
             conn.rollback()
-
-            # Delete the newly uploaded file (duplicate)
-            os.remove(file_path)
-
-            # Re-query to get the existing document
             cursor.execute(
                 "SELECT id, file_name FROM documents WHERE dataset_id = ? AND file_hash = ?",
                 (dataset_id, file_hash)
             )
             existing_doc = cursor.fetchone()
-
             return {
                 "dataset_id": str(dataset_id),
                 "doc_id": str(existing_doc['id']),
@@ -283,7 +272,7 @@ async def upload_from_s3(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to verify S3 file: {str(e)}")
 
-    # Download to a temp location
+    # Download to a temp location for hash calculation only
     storage = get_storage()
     temp_dir = Path(tempfile.gettempdir()) / f"s3_{dataset_id}"
     temp_dir.mkdir(parents=True, exist_ok=True)
@@ -300,23 +289,19 @@ async def upload_from_s3(
         temp_file.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Failed to download file from S3: {str(e)}")
 
-    # Move to permanent storage
+    # Create document record using temp file for hash/size, but store s3_url as file_path
     try:
-        with open(temp_file, "rb") as f:
-            file_path = storage.save(f, filename, dataset_id)
-        temp_file.unlink(missing_ok=True)
-    except Exception as e:
-        temp_file.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
-
-    # Create document record — identical to local upload (doc_id = content hash)
-    try:
-        result = _create_document_record(dataset_id, file_path, filename, metadata)
+        result = _create_document_record(
+            dataset_id, str(temp_file), filename, metadata, s3_url=s3_url
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         print(f"[ERROR] Document record creation failed for {filename}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create document record: {str(e)}")
+    finally:
+        # Temp file is no longer needed; worker fetches directly from S3
+        temp_file.unlink(missing_ok=True)
 
     message = (
         "File already exists, reusing existing document"
@@ -557,7 +542,10 @@ def list_documents(dataset_id: str, status: Optional[str] = None):
     
     rows = cursor.fetchall()
     conn.close()
-    
+
+    # Pre-compute base_dir once for all file_url builds
+    base_dir = Path(get_storage().base_dir).resolve()
+
     results = []
     for row in rows:
         doc_metadata = json.loads(row["metadata"]) if "metadata" in row.keys() and row["metadata"] else None
@@ -566,7 +554,7 @@ def list_documents(dataset_id: str, status: Optional[str] = None):
             dataset_id=str(row["dataset_id"]),
             file_name=row["file_name"],
             file_path=row["file_path"],
-            file_url=_build_file_url(row["file_path"]),
+            file_url=_build_file_url(row["file_path"], base_dir),
             workspace_dir=row["workspace_dir"],
             file_size=row["file_size"],
             file_type=row["file_type"],
