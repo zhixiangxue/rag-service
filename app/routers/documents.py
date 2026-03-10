@@ -30,6 +30,27 @@ from .. import config
 router = APIRouter(prefix="/datasets/{dataset_id}/documents", tags=["documents"])
 
 
+def _build_file_url(stored_path: str) -> Optional[str]:
+    """Build file_url from stored file path (s3:// or local)."""
+    if not stored_path:
+        return None
+    if stored_path.startswith("s3://"):
+        return stored_path
+    # Local file: expose through the API's /files/ endpoint
+    raw_path = stored_path.replace("\\", "/")
+    file_path = Path(raw_path)
+    if not file_path.is_absolute():
+        file_path = Path.cwd() / file_path
+    file_path = file_path.resolve()
+    storage = get_storage()
+    base_dir = Path(storage.base_dir).resolve()
+    try:
+        rel_path = file_path.relative_to(base_dir)
+        return f"http://{config.API_PUBLIC_HOST}:{config.API_PORT}/files/{rel_path.as_posix()}"
+    except ValueError:
+        return None
+
+
 def _validate_metadata(metadata: Optional[str]) -> dict:
     """
     Validate metadata JSON string and guideline field.
@@ -545,6 +566,7 @@ def list_documents(dataset_id: str, status: Optional[str] = None):
             dataset_id=str(row["dataset_id"]),
             file_name=row["file_name"],
             file_path=row["file_path"],
+            file_url=_build_file_url(row["file_path"]),
             workspace_dir=row["workspace_dir"],
             file_size=row["file_size"],
             file_type=row["file_type"],
@@ -580,34 +602,7 @@ def get_document(dataset_id: str, doc_id: str):
     doc_metadata = json.loads(row["metadata"]) if "metadata" in row.keys() and row["metadata"] else None
     
     # Build file_url for the worker to fetch the file
-    stored_path = row["file_path"]
-
-    if stored_path.startswith("s3://"):
-        # S3-hosted file: the worker downloads it directly from S3
-        file_url = stored_path
-    else:
-        # Local file: expose through the API's /files/ endpoint
-        # Normalize path for cross-platform compatibility
-        raw_path = stored_path.replace("\\", "/")
-        file_path = Path(raw_path)
-
-        # Make path absolute if it's relative
-        if not file_path.is_absolute():
-            file_path = Path.cwd() / file_path
-
-        file_path = file_path.resolve()
-
-        # Convert to relative path from UPLOAD_DIR
-        storage = get_storage()
-        base_dir = Path(storage.base_dir).resolve()
-
-        try:
-            rel_path = file_path.relative_to(base_dir)
-            rel_path_url = rel_path.as_posix()
-            file_url = f"http://{config.API_PUBLIC_HOST}:{config.API_PORT}/files/{rel_path_url}"
-        except ValueError:
-            # file_path is not under base_dir
-            file_url = None
+    file_url = _build_file_url(row["file_path"])
     
     data = DocumentResponse(
         doc_id=str(row["id"]),
