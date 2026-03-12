@@ -13,7 +13,7 @@ import json
 import re
 
 from ..database import get_connection, now, generate_id
-from ..domain.deps import Rule
+from ..domain.deps import Rule, DependencySource
 from ..schemas import ApiResponse, MessageResponse
 
 router = APIRouter(prefix="/datasets", tags=["dependencies"])
@@ -246,6 +246,17 @@ def create_dependency(dataset_id: str, body: DependencyCreate):
     except ValueError as e:
         conn.close()
         raise HTTPException(status_code=400, detail=str(e))
+
+    # If rule is doc-level, verify the source document exists
+    parsed_rule = Rule.parse(body.rule)
+    if parsed_rule.protocol == DependencySource.DOC:
+        cursor.execute("SELECT id FROM documents WHERE id = ?", (parsed_rule.value,))
+        if not cursor.fetchone():
+            conn.close()
+            raise HTTPException(
+                status_code=404,
+                detail=f"Source document '{parsed_rule.value}' not found"
+            )
 
     # Validate target document exists
     cursor.execute("SELECT id, file_name FROM documents WHERE id = ?", (body.target_doc_id,))
