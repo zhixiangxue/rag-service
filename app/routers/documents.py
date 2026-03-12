@@ -11,6 +11,7 @@ from pathlib import Path
 from zag.utils.hash import calculate_file_hash
 from ..utils.s3 import get_s3_object_info, download_file_from_s3_async
 from ..database import get_connection, now, generate_id
+from ..domain.deps import Rule, DependencySource
 from ..schemas import (
     DocumentResponse,
     ApiResponse,
@@ -217,7 +218,29 @@ def _create_document_record(
         conn.close()
 
 
-@router.post("", response_model=ApiResponse[dict])
+def _cache_pdf_to_files_dir(src_path: str, doc_id: str) -> None:
+    """Copy uploaded PDF to PDF_FILES_DIR/{doc_id}.pdf for locate_pages lookup.
+
+    Only copies .pdf files. Skips silently if file already exists or on any error
+    so the main upload flow is never affected.
+
+    Args:
+        src_path: Local path to the source PDF file
+        doc_id: Document ID used as the target filename
+    """
+    import shutil
+    if not src_path.lower().endswith(".pdf"):
+        return
+    try:
+        dest_dir = Path(config.PDF_FILES_DIR)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / f"{doc_id}.pdf"
+        if not dest.exists():
+            shutil.copy2(src_path, dest)
+    except Exception as e:
+        print(f"[WARN] Failed to cache PDF to PDF_FILES_DIR for doc_id {doc_id}: {e}")
+
+
 async def upload_file(
     dataset_id: str,
     file: UploadFile = File(...),
@@ -233,7 +256,10 @@ async def upload_file(
         result = _create_document_record(dataset_id, file_path, file.filename, metadata)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
+
+    # Cache PDF to PDF_FILES_DIR for locate_pages fast lookup
+    _cache_pdf_to_files_dir(file_path, result["doc_id"])
+
     message = "File already exists, reusing existing document" if result["is_duplicate"] else "File uploaded successfully"
     return ApiResponse(success=True, code=200, message=message, data=result)
 
@@ -290,6 +316,7 @@ async def upload_from_s3(
         raise HTTPException(status_code=500, detail=f"Failed to download file from S3: {str(e)}")
 
     # Create document record using temp file for hash/size, but store s3_url as file_path
+    result = None
     try:
         result = _create_document_record(
             dataset_id, str(temp_file), filename, metadata, s3_url=s3_url
@@ -300,6 +327,9 @@ async def upload_from_s3(
         print(f"[ERROR] Document record creation failed for {filename}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create document record: {str(e)}")
     finally:
+        # Cache PDF to PDF_FILES_DIR before removing temp file
+        if result:
+            _cache_pdf_to_files_dir(str(temp_file), result["doc_id"])
         # Temp file is no longer needed; worker fetches directly from S3
         temp_file.unlink(missing_ok=True)
 
@@ -409,10 +439,7 @@ def get_document_views(
     conn.close()
 
     if not row:
-        if config.DEFAULT_COLLECTION_NAME:
-            collection_name = config.DEFAULT_COLLECTION_NAME
-        else:
-            raise HTTPException(status_code=404, detail="Dataset not found")
+        raise HTTPException(status_code=404, detail="Dataset not found")
     else:
         collection_name = row["name"]
 
@@ -688,7 +715,11 @@ async def update_document(
 
 @router.delete("/{doc_id}", response_model=ApiResponse[MessageResponse])
 def delete_document(dataset_id: str, doc_id: str):
-    """Delete document and cleanup vector store."""
+    """Delete document and cleanup vector store.
+    
+    Returns 409 Conflict if the document has active dependencies.
+    Callers should resolve dependencies before retrying.
+    """
     conn = get_connection()
     cursor = conn.cursor()
     
@@ -702,6 +733,23 @@ def delete_document(dataset_id: str, doc_id: str):
         conn.close()
         raise HTTPException(status_code=404, detail="Document not found")
     
+    # Check for active dependencies (documents that depend on this one)
+    cursor.execute(
+        "SELECT rule, target_doc_id FROM dependencies WHERE target_doc_id = ? AND dataset_id = ?",
+        (doc_id, dataset_id)
+    )
+    dependencies = cursor.fetchall()
+    if dependencies:
+        conn.close()
+        dep_list = [{"rule": d["rule"], "target_doc_id": d["target_doc_id"]} for d in dependencies]
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Document has active dependencies",
+                "dependencies": dep_list
+            }
+        )
+    
     # Get dataset name as collection_name
     cursor.execute("SELECT name FROM datasets WHERE id = ?", (dataset_id,))
     dataset = cursor.fetchone()
@@ -712,6 +760,11 @@ def delete_document(dataset_id: str, doc_id: str):
     collection_name = dataset["name"]
     
     # Delete from database
+    # Clean up dependencies where this doc is the source (doc:<doc_id>)
+    cursor.execute(
+        "DELETE FROM dependencies WHERE rule = ? AND dataset_id = ?",
+        (str(Rule.build(DependencySource.DOC, doc_id)), dataset_id)
+    )
     cursor.execute("DELETE FROM tasks WHERE doc_id = ?", (doc_id,))
     cursor.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
     conn.commit()

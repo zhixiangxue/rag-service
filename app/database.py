@@ -117,7 +117,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS dependencies (
             id TEXT PRIMARY KEY,
             dataset_id TEXT NOT NULL,
-            source TEXT NOT NULL,
+            rule TEXT NOT NULL,
             target_doc_id TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -127,8 +127,8 @@ def init_db():
     """)
 
     cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_dependencies_dataset_source
-            ON dependencies(dataset_id, source)
+        CREATE INDEX IF NOT EXISTS idx_dependencies_dataset_rule
+            ON dependencies(dataset_id, rule)
     """)
     
     conn.commit()

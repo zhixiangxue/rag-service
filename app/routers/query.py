@@ -33,7 +33,7 @@ def get_dataset_info(dataset_id: str) -> Tuple[str, str]:
         Tuple of (collection_name, engine)
         
     Raises:
-        HTTPException: If dataset not found (only when DEFAULT_COLLECTION_NAME is not configured)
+        HTTPException: If dataset not found
     """
     conn = get_connection()
     cursor = conn.cursor()
@@ -42,12 +42,6 @@ def get_dataset_info(dataset_id: str) -> Tuple[str, str]:
     conn.close()
     
     if not row:
-        # TODO: Remove this fallback when dataset management is fully implemented in business
-        # Currently, the business doesn't have dataset management yet, so we fallback to a
-        # hardcoded collection name. This allows the API to work without proper dataset setup.
-        # When dataset management is ready, remove the fallback and raise 404 instead.
-        if config.DEFAULT_COLLECTION_NAME:
-            return config.DEFAULT_COLLECTION_NAME, config.DEFAULT_VECTOR_ENGINE
         raise HTTPException(status_code=404, detail="Dataset not found")
     
     return row["name"], row["engine"]

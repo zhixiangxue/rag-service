@@ -2,11 +2,10 @@
 
 A dependency rule says: whenever doc X is selected, also bring in doc Y.
 
-Source field prefix conventions:
+Rule field prefix conventions:
   lender:<name>   - applies to all docs from this lender
   overlay:<value> - applies to docs whose metadata.overlays contains this value
-  doc:<doc_id>    - applies to this specific document
-"""
+  doc:<doc_id>    - applies to this specific document"""
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Dict, List, Optional
@@ -14,6 +13,7 @@ import json
 import re
 
 from ..database import get_connection, now, generate_id
+from ..domain.deps import Rule
 from ..schemas import ApiResponse, MessageResponse
 
 router = APIRouter(prefix="/datasets", tags=["dependencies"])
@@ -24,14 +24,14 @@ router = APIRouter(prefix="/datasets", tags=["dependencies"])
 # ---------------------------------------------------------------------------
 
 class DependencyCreate(BaseModel):
-    source: str
+    rule: str
     target_doc_id: str
 
 
 class DependencyResponse(BaseModel):
     id: str
     dataset_id: str
-    source: str
+    rule: str
     target_doc_id: str
     target_file_name: Optional[str] = None
     created_at: str
@@ -43,7 +43,7 @@ class BatchDependenciesRequest(BaseModel):
 
 
 class DocDependencyBreakdown(BaseModel):
-    """Dependency doc_ids grouped by the rule source type that triggered them."""
+    """Dependency doc_ids grouped by the rule protocol that triggered them."""
     lender: List[str] = []
     overlay: List[str] = []
     doc: List[str] = []
@@ -88,22 +88,22 @@ def _load_rules_and_meta(cursor, dataset_id: str, seed_doc_ids: List[str]) -> tu
     """
     # Load all dependency rules for the dataset
     cursor.execute(
-        "SELECT source, target_doc_id FROM dependencies WHERE dataset_id = ?",
+        "SELECT rule, target_doc_id FROM dependencies WHERE dataset_id = ?",
         (dataset_id,)
     )
     rules_map: dict = {}
     all_target_ids: set = set()
-    for rule in cursor.fetchall():
-        source: str = rule["source"]
+    for row in cursor.fetchall():
+        rule_str: str = row["rule"]
         # Normalize lender:/overlay: value; doc: IDs are kept as-is
-        if source.startswith("lender:"):
-            key = _source_key("lender", source[len("lender:"):])
-        elif source.startswith("overlay:"):
-            key = _source_key("overlay", source[len("overlay:"):])
+        if rule_str.startswith("lender:"):
+            key = _source_key("lender", rule_str[len("lender:"):])
+        elif rule_str.startswith("overlay:"):
+            key = _source_key("overlay", rule_str[len("overlay:"):])
         else:
-            key = source  # doc:<id> or unknown prefix, no normalization
-        rules_map.setdefault(key, set()).add(rule["target_doc_id"])
-        all_target_ids.add(rule["target_doc_id"])
+            key = rule_str  # doc:<id> or unknown prefix, no normalization
+        rules_map.setdefault(key, set()).add(row["target_doc_id"])
+        all_target_ids.add(row["target_doc_id"])
 
     # Batch-fetch metadata for seed docs + all possible targets
     all_ids = list(set(seed_doc_ids) | all_target_ids)
@@ -187,7 +187,7 @@ def list_dependencies(dataset_id: str):
 
     cursor.execute(
         """
-        SELECT d.id, d.dataset_id, d.source, d.target_doc_id,
+        SELECT d.id, d.dataset_id, d.rule, d.target_doc_id,
                doc.file_name AS target_file_name,
                d.created_at, d.updated_at
         FROM dependencies d
@@ -204,7 +204,7 @@ def list_dependencies(dataset_id: str):
         DependencyResponse(
             id=row["id"],
             dataset_id=row["dataset_id"],
-            source=row["source"],
+            rule=row["rule"],
             target_doc_id=row["target_doc_id"],
             target_file_name=row["target_file_name"],
             created_at=row["created_at"],
@@ -220,6 +220,7 @@ def create_dependency(dataset_id: str, body: DependencyCreate):
     """Create a new dependency rule.
 
     Validates that target_doc_id exists in the documents table.
+    Validates source format (must be one of: doc:, lender:, overlay:).
     """
     conn = get_connection()
     cursor = conn.cursor()
@@ -227,6 +228,13 @@ def create_dependency(dataset_id: str, body: DependencyCreate):
     if not _dataset_exists(cursor, dataset_id):
         conn.close()
         raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Validate rule format
+    try:
+        Rule.parse(body.rule)
+    except ValueError as e:
+        conn.close()
+        raise HTTPException(status_code=400, detail=str(e))
 
     # Validate target document exists
     cursor.execute("SELECT id, file_name FROM documents WHERE id = ?", (body.target_doc_id,))
@@ -243,10 +251,10 @@ def create_dependency(dataset_id: str, body: DependencyCreate):
 
     cursor.execute(
         """
-        INSERT INTO dependencies (id, dataset_id, source, target_doc_id, created_at, updated_at)
+        INSERT INTO dependencies (id, dataset_id, rule, target_doc_id, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (dep_id, dataset_id, body.source, body.target_doc_id, timestamp, timestamp)
+        (dep_id, dataset_id, body.rule, body.target_doc_id, timestamp, timestamp)
     )
     conn.commit()
     conn.close()
@@ -258,7 +266,7 @@ def create_dependency(dataset_id: str, body: DependencyCreate):
         data=DependencyResponse(
             id=dep_id,
             dataset_id=dataset_id,
-            source=body.source,
+            rule=body.rule,
             target_doc_id=body.target_doc_id,
             target_file_name=target_doc["file_name"],
             created_at=timestamp,
@@ -295,7 +303,7 @@ def delete_dependency(dataset_id: str, dep_id: str):
 
 @router.get("/{dataset_id}/{doc_id}/dependencies", response_model=ApiResponse[DocDependencyBreakdown])
 def get_doc_dependencies(dataset_id: str, doc_id: str):
-    """Return transitive dependency doc_ids for a document, grouped by rule source type."""
+    """Return transitive dependency doc_ids for a document, grouped by rule protocol."""
     conn = get_connection()
     cursor = conn.cursor()
 

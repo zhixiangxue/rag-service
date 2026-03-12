@@ -68,11 +68,6 @@ MEILISEARCH_API_KEY = os.getenv("MEILISEARCH_API_KEY")  # Optional
 #FALKORDB_HOST = require_env("FALKORDB_HOST")
 #FALKORDB_PORT = int(require_env("FALKORDB_PORT"))
 
-# TODO: Remove these default fallback settings when dataset management is fully implemented
-# Currently used as fallback when dataset_id is not found in database
-DEFAULT_COLLECTION_NAME = require_env("DEFAULT_COLLECTION_NAME")
-DEFAULT_VECTOR_ENGINE = require_env("DEFAULT_VECTOR_ENGINE")
-
 # ============================================
 # Embedding & Reranker Configuration
 # ============================================
