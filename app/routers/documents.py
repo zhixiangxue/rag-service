@@ -1,7 +1,7 @@
 """Document API endpoints."""
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Body
 from fastapi.responses import FileResponse
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import os
 import json
 import sqlite3
@@ -52,46 +52,35 @@ def _build_file_url(stored_path: str, base_dir_str: Optional[str] = None) -> Opt
     return None
 
 
-def _validate_metadata(metadata: Optional[str]) -> dict:
+def _validate_metadata(metadata: dict) -> dict:
     """
-    Validate metadata JSON string and guideline field.
-    
+    Validate metadata dict structure.
+
     Args:
-        metadata: JSON string or None
-        
+        metadata: Metadata dict
+
     Returns:
-        Parsed metadata dict
-        
+        The validated metadata dict
+
     Raises:
-        ValueError: If metadata is invalid or guideline value is not allowed
+        ValueError: If metadata is invalid or guideline/overlays values are not allowed
     """
-    if metadata is None:
-        raise ValueError(
-            "metadata is required. Please provide a JSON object. "
-            "Recommended fields: "
-            '{"lender": "xxx", "guideline": "FannieMae|FreddieMac|VA|USDA|FHA", '
-            '"overlays": ["xxx"], "tags": ["xxx"]}'
-        )
-    try:
-        metadata_dict = json.loads(metadata)
-        if not isinstance(metadata_dict, dict):
-            raise ValueError("Metadata must be a JSON object")
-    except json.JSONDecodeError:
-        raise ValueError("Metadata must be valid JSON")
+    if not isinstance(metadata, dict):
+        raise ValueError("Metadata must be a JSON object")
 
     # Validate guideline and overlays fields
     VALID_GUIDELINES = {"FannieMae", "FreddieMac", "VA", "USDA", "FHA"}
 
-    if "guideline" in metadata_dict:
-        guideline_val = metadata_dict["guideline"]
+    if "guideline" in metadata:
+        guideline_val = metadata["guideline"]
         if guideline_val not in VALID_GUIDELINES:
             raise ValueError(
                 f'Invalid guideline value: "{guideline_val}". '
                 f"Must be one of: {sorted(VALID_GUIDELINES)}"
             )
 
-    if "overlays" in metadata_dict:
-        overlays = metadata_dict["overlays"]
+    if "overlays" in metadata:
+        overlays = metadata["overlays"]
         if not isinstance(overlays, list):
             raise ValueError('overlays must be an array')
         for item in overlays:
@@ -101,14 +90,14 @@ def _validate_metadata(metadata: Optional[str]) -> dict:
                     f"Must be one of: {sorted(VALID_GUIDELINES)}"
                 )
 
-    return metadata_dict
+    return metadata
 
 
 def _create_document_record(
     dataset_id: str,
     file_path: str,
     filename: str,
-    metadata: Optional[str] = None,
+    metadata: Optional[dict] = None,
     s3_url: Optional[str] = None,
 ) -> dict:
     """
@@ -119,7 +108,7 @@ def _create_document_record(
         dataset_id: Dataset ID
         file_path: Local path to the saved file (used for hash/size calculation)
         filename: Original filename
-        metadata: Optional JSON metadata string
+        metadata: Validated metadata dict
         s3_url: If provided, stored as file_path in DB instead of local path
 
     Returns:
@@ -171,9 +160,14 @@ def _create_document_record(
         file_size = os.path.getsize(file_path)
         file_type = filename.split(".")[-1] if "." in filename else "unknown"
 
-        # Parse and validate metadata
-        metadata_dict = _validate_metadata(metadata)
-        metadata_json = json.dumps(metadata_dict)
+        # Serialize metadata to JSON for storage
+        if metadata is None:
+            raise ValueError(
+                "metadata is required. Please provide a JSON object. "
+                'Recommended fields: {"lender": "xxx", "guideline": "FannieMae|...", '
+                '"overlays": ["xxx"], "tags": ["xxx"]}'
+            )
+        metadata_json = json.dumps(metadata)
 
         timestamp = now()
         # Use file_hash as doc_id to ensure same content gets same ID
@@ -247,13 +241,25 @@ async def upload_file(
     metadata: str = Form(...)
 ):
     """Upload file to dataset."""
+    # Parse metadata string (form data is always str)
+    try:
+        metadata_dict = json.loads(metadata)
+        if not isinstance(metadata_dict, dict):
+            raise ValueError("Metadata must be a JSON object")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Metadata must be valid JSON")
+    try:
+        _validate_metadata(metadata_dict)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     # Save file using storage abstraction
     storage = get_storage()
     file_path = storage.save(file.file, file.filename, dataset_id)
-    
+
     # Create document record (handles dataset validation, hash, duplicate check, insert)
     try:
-        result = _create_document_record(dataset_id, file_path, file.filename, metadata)
+        result = _create_document_record(dataset_id, file_path, file.filename, metadata_dict)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -268,7 +274,7 @@ async def upload_file(
 async def upload_from_s3(
     dataset_id: str,
     s3_url: str = Body(..., embed=True),
-    metadata: str = Body(..., embed=True),
+    metadata: Dict[str, Any] = Body(..., embed=True),
 ):
     """
     Download a file from S3 and register it in the dataset.
@@ -279,6 +285,12 @@ async def upload_from_s3(
     """
     if not s3_url.startswith("s3://"):
         raise HTTPException(status_code=400, detail="s3_url must start with 's3://'")
+
+    # Validate metadata structure
+    try:
+        _validate_metadata(metadata)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     filename = Path(s3_url).name
     if not filename:
@@ -647,12 +659,12 @@ def get_document(dataset_id: str, doc_id: str):
 async def update_document(
     dataset_id: str,
     doc_id: str,
-    metadata: str = Body(..., embed=True)
+    metadata: Dict[str, Any] = Body(..., embed=True)
 ):
     """Update document metadata."""
-    # Validate metadata first
+    # Validate metadata structure
     try:
-        metadata_dict = _validate_metadata(metadata)
+        _validate_metadata(metadata)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -672,7 +684,7 @@ async def update_document(
 
     # Update metadata
     timestamp = now()
-    metadata_json = json.dumps(metadata_dict)
+    metadata_json = json.dumps(metadata)
 
     cursor.execute(
         "UPDATE documents SET metadata = ?, updated_at = ? WHERE id = ?",
