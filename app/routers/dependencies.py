@@ -34,6 +34,7 @@ class DependencyResponse(BaseModel):
     rule: str
     target_doc_id: str
     target_file_name: Optional[str] = None
+    desc: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -189,9 +190,13 @@ def list_dependencies(dataset_id: str):
         """
         SELECT d.id, d.dataset_id, d.rule, d.target_doc_id,
                doc.file_name AS target_file_name,
+               doc.file_path AS target_file_path,
+               src_doc.file_path AS source_file_path,
                d.created_at, d.updated_at
         FROM dependencies d
         LEFT JOIN documents doc ON doc.id = d.target_doc_id
+        LEFT JOIN documents src_doc
+            ON d.rule LIKE 'doc:%' AND src_doc.id = SUBSTR(d.rule, 5)
         WHERE d.dataset_id = ?
         ORDER BY d.created_at DESC
         """,
@@ -200,18 +205,24 @@ def list_dependencies(dataset_id: str):
     rows = cursor.fetchall()
     conn.close()
 
-    items = [
-        DependencyResponse(
+    items = []
+    for row in rows:
+        rule_str = row["rule"]
+        target_fp = row["target_file_path"]
+        if rule_str.startswith("doc:"):
+            desc = f"{row['source_file_path']} -> {target_fp}"
+        else:
+            desc = f"{rule_str} -> {target_fp}"
+        items.append(DependencyResponse(
             id=row["id"],
             dataset_id=row["dataset_id"],
-            rule=row["rule"],
+            rule=rule_str,
             target_doc_id=row["target_doc_id"],
             target_file_name=row["target_file_name"],
+            desc=desc,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
-        )
-        for row in rows
-    ]
+        ))
     return ApiResponse(success=True, code=200, data=items)
 
 
@@ -245,6 +256,15 @@ def create_dependency(dataset_id: str, body: DependencyCreate):
             status_code=404,
             detail=f"Target document '{body.target_doc_id}' not found"
         )
+
+    # Check for duplicate rule + target_doc_id in this dataset
+    cursor.execute(
+        "SELECT id FROM dependencies WHERE dataset_id = ? AND rule = ? AND target_doc_id = ?",
+        (dataset_id, body.rule, body.target_doc_id)
+    )
+    if cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=409, detail="Dependency with this rule and target already exists")
 
     timestamp = now()
     dep_id = generate_id()
