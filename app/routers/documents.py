@@ -799,7 +799,7 @@ def delete_document(dataset_id: str, doc_id: str):
             collection_name=collection_name,
             embedder=embedder
         )
-        vector_store.delete_by_doc_id(doc_id)
+        vector_store.remove({"doc_id": doc_id})
     except Exception as e:
         # Log but don't fail the API call
         print(f"Warning: Failed to cleanup vector store for doc_id {doc_id}: {e}")
