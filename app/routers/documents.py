@@ -1016,7 +1016,7 @@ async def locate_pages(
 
                 # Search only the newly added portion
                 if start_pos is None:
-                    found = fuzzy_find_start(norm_start, full_text, start_from=search_from, threshold=0.80)
+                    found = fuzzy_find_start(norm_start, full_text, start_from=search_from, threshold=0.85)
                     if found is not None:
                         start_pos = found
                     else:
@@ -1027,7 +1027,7 @@ async def locate_pages(
                         found_end = fuzzy_find_start(
                             norm_end, full_text,
                             start_from=start_pos + len(norm_start),
-                            threshold=0.80,
+                            threshold=0.85,
                             max_search_range=100000,
                         )
                         if found_end is not None:
