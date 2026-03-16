@@ -65,7 +65,7 @@ def _rewrite_for_fulltext(query: str) -> str:
     """
     try:
         import chak
-        conv = chak.Conversation("openai/gpt-4o-mini", api_key=config.OPENAI_API_KEY)
+        conv = chak.Conversation(f"{config.LLM_PROVIDER}/{config.LLM_MODEL}", api_key=config.LLM_API_KEY)
         prompt = (
             "Extract the most important search keywords from the following question "
             "for a full-text search engine (BM25). "
