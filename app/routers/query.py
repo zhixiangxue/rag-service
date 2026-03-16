@@ -439,7 +439,7 @@ async def query_tree_simple(dataset_id: str, request: TreeQueryRequest):
         retriever = SimpleRetriever(
             vector_store=vector_store,
             llm_uri=f"{config.LLM_PROVIDER}/{config.LLM_MODEL}",
-            api_key=config.OPENAI_API_KEY,
+            api_key=config.LLM_API_KEY,
             max_depth=request.max_depth
         )
         
@@ -501,7 +501,7 @@ async def query_tree_mcts(dataset_id: str, request: TreeQueryRequest):
         from zag.retrievers.tree import MCTSRetriever
         retriever = MCTSRetriever.from_preset(
             preset_name=request.preset,
-            api_key=config.OPENAI_API_KEY,
+            api_key=config.LLM_API_KEY,
             verbose=False,
             vector_store=vector_store
         )
@@ -564,7 +564,7 @@ async def query_tree_skeleton(dataset_id: str, request: TreeQueryRequest):
         from zag.retrievers.tree import SkeletonRetriever
         retriever = SkeletonRetriever(
             llm_uri=f"{config.LLM_PROVIDER}/{config.LLM_MODEL}",
-            api_key=config.OPENAI_API_KEY,
+            api_key=config.LLM_API_KEY,
             verbose=False,
             vector_store=vector_store
         )

@@ -83,6 +83,13 @@ RERANKER_URI = os.getenv("RERANKER_URI", "cohere/rerank-english-v3.0")
 # ============================================
 LLM_PROVIDER = require_env("LLM_PROVIDER")
 LLM_MODEL = require_env("LLM_MODEL")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")  # Optional
+_LLM_KEY_MAP = {
+    "openai": OPENAI_API_KEY,
+    "anthropic": ANTHROPIC_API_KEY,
+    "bailian": BAILIAN_API_KEY,
+}
+LLM_API_KEY = _LLM_KEY_MAP.get(LLM_PROVIDER) or OPENAI_API_KEY
 
 # ============================================
 # File Storage Configuration

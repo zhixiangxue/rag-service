@@ -81,12 +81,12 @@ LLM_PROVIDER = require_env("LLM_PROVIDER", "openai")  # openai, anthropic, baili
 LLM_MODEL = require_env("LLM_MODEL", "gpt-4o-mini")
 
 # Dynamically select LLM API key based on provider
-if LLM_PROVIDER == "openai":
-    LLM_API_KEY = OPENAI_API_KEY
-elif LLM_PROVIDER == "bailian":
-    LLM_API_KEY = BAILIAN_API_KEY
-else:
-    LLM_API_KEY = None  # anthropic or other providers
+_LLM_KEY_MAP = {
+    "openai": OPENAI_API_KEY,
+    "anthropic": ANTHROPIC_API_KEY,
+    "bailian": BAILIAN_API_KEY,
+}
+LLM_API_KEY = _LLM_KEY_MAP.get(LLM_PROVIDER) or OPENAI_API_KEY
 
 # ============================================
 # Reranker Configuration
