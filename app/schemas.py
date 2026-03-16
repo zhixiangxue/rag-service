@@ -13,6 +13,13 @@ class ProcessingMode(str, Enum):
     LOD = "lod"          # Level-of-Detail indexing
 
 
+class ReaderType(str, Enum):
+    """Document reader type for parsing."""
+    DEFAULT = "mineru"
+    MINERU = "mineru"    # MinerU reader (GPU-accelerated, default)
+    CLAUDE = "claude"    # Claude Vision reader (API-based, high quality)
+
+
 # ============ Common Response Wrapper ============
 
 T = TypeVar('T')
@@ -86,6 +93,7 @@ class TaskResponse(BaseModel):
     dataset_id: str
     doc_id: str
     mode: str = "classic"
+    reader: str = ReaderType.DEFAULT  # Reader used: mineru | claude
     status: str  # PENDING, PROCESSING, COMPLETED, FAILED
     progress: int  # 0-100
     metadata: Optional[Dict[str, Any]] = None  # Document metadata from upload
@@ -120,6 +128,7 @@ class UnitResponse(BaseModel):
     unit_id: str
     unit_type: str = "text"
     content: Any
+    embedding_content: Optional[str] = None  # Text used for embedding (may differ from content)
     metadata: Dict[str, Any]
     doc_id: Optional[str] = None
     prev_unit_id: Optional[str] = None
@@ -137,6 +146,7 @@ class UnitResponse(BaseModel):
             unit_id=unit.unit_id,
             unit_type=str(unit.unit_type) if unit.unit_type else "text",
             content=unit.content,
+            embedding_content=getattr(unit, 'embedding_content', None),
             metadata=unit.metadata.model_dump() if unit.metadata else {},
             doc_id=unit.doc_id,
             prev_unit_id=unit.prev_unit_id,
@@ -152,6 +162,7 @@ class UnitRawResponse(BaseModel):
     unit_id: str
     unit_type: str = "text"
     content: Any
+    embedding_content: Optional[str] = None  # Text used for embedding (may differ from content)
     metadata: Dict[str, Any]
     doc_id: Optional[str] = None
     prev_unit_id: Optional[str] = None
@@ -167,6 +178,7 @@ class UnitRawResponse(BaseModel):
             unit_id=unit.unit_id,
             unit_type=str(unit.unit_type) if unit.unit_type else "text",
             content=unit.content,
+            embedding_content=getattr(unit, 'embedding_content', None),
             metadata=unit.metadata.model_dump() if unit.metadata else {},
             doc_id=unit.doc_id,
             prev_unit_id=unit.prev_unit_id,
@@ -177,13 +189,24 @@ class UnitRawResponse(BaseModel):
         )
 
 
-class UnitUpdate(BaseModel):
-    metadata: Dict[str, Any]
-
-
 class UnitBatchUpdate(BaseModel):
     unit_id: str
     metadata: Dict[str, Any]
+
+
+class UnitCreateRequest(BaseModel):
+    """Request body for manually creating a TextUnit.
+
+    All fields are required to ensure the unit is complete and correctly
+    embedded from the start. content and embedding_content are always paired:
+    content is what LLM sees, embedding_content is what drives retrieval.
+    """
+    doc_id: str
+    content: str
+    embedding_content: str
+    metadata_custom: Dict[str, Any]  # At minimum tags and mode are expected
+    prev_unit_id: Optional[str] = None
+    next_unit_id: Optional[str] = None
 
 
 # ============ Query ============

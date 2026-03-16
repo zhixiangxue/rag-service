@@ -1,6 +1,6 @@
 """Document API endpoints."""
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Body
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from typing import List, Optional, Dict, Any
 import os
 import json
@@ -18,6 +18,7 @@ from ..schemas import (
     MessageResponse,
     TaskResponse,
     ProcessingMode,
+    ReaderType,
     _extract_tags,
     LocatePageRequest,
     LocatePageResult,
@@ -357,7 +358,8 @@ async def upload_from_s3(
 async def create_task(
     dataset_id: str,
     doc_id: str,
-    mode: ProcessingMode = ProcessingMode.CLASSIC
+    mode: ProcessingMode = ProcessingMode.CLASSIC,
+    reader: ReaderType = ReaderType.MINERU
 ):
     """Create a processing task for an existing document."""
     conn = get_connection()
@@ -383,10 +385,10 @@ async def create_task(
     # Create Task record
     cursor.execute(
         """
-        INSERT INTO tasks (id, dataset_id, doc_id, mode, status, progress, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO tasks (id, dataset_id, doc_id, mode, reader, status, progress, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (task_id, dataset_id, doc_id, mode.value, TaskStatus.PENDING, 0, timestamp, timestamp)
+        (task_id, dataset_id, doc_id, mode.value, reader.value, TaskStatus.PENDING, 0, timestamp, timestamp)
     )
     conn.commit()
     
@@ -407,6 +409,7 @@ async def create_task(
             dataset_id=dataset_id,
             doc_id=doc_id,
             mode=mode.value,
+            reader=reader.value,
             status=TaskStatus.PENDING,
             progress=0,
             metadata=doc_metadata,
@@ -414,6 +417,146 @@ async def create_task(
             updated_at=timestamp
         )
     )
+
+
+@router.get("/{doc_id}/units/export")
+async def export_units_excel(dataset_id: str, doc_id: str):
+    """Export all units for a document as an Excel file."""
+    import io
+    try:
+        import openpyxl
+        from openpyxl.styles import PatternFill, Font, Alignment
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        raise HTTPException(status_code=500, detail="openpyxl is required: pip install openpyxl")
+
+    # Verify document exists
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT file_name FROM documents WHERE id = ? AND dataset_id = ?",
+        (doc_id, dataset_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Fetch units via internal units router logic
+    from .units import _list_units_for_doc
+    units = await _list_units_for_doc(dataset_id, doc_id)
+
+    # Build Excel in memory
+    COLUMNS = [
+        ("unit_id",           "Unit ID",           38),
+        ("unit_type",         "Type",              10),
+        ("has_views",         "LOD?",               8),
+        ("content",           "Content",           80),
+        ("embedding_content", "Embedding Content", 80),
+    ]
+    HEADER_FILL = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    CELL_FILL   = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+    HEADER_FONT = Font(color="FFFFFF", bold=True)
+    WRAP        = Alignment(wrap_text=True, vertical="top")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Units"
+
+    for col_idx, (key, label, width) in enumerate(COLUMNS, 1):
+        cell = ws.cell(row=1, column=col_idx, value=label)
+        cell.fill = HEADER_FILL
+        cell.font = HEADER_FONT
+        cell.alignment = WRAP
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+    for row_idx, unit in enumerate(units, 2):
+        row_data = {
+            "unit_id":           unit.get("unit_id", ""),
+            "unit_type":         unit.get("unit_type", ""),
+            "has_views":         "YES" if unit.get("has_views") else "",
+            "content":           unit.get("content", ""),
+            "embedding_content": unit.get("embedding_content", "") or "",
+        }
+        for col_idx, (key, label, width) in enumerate(COLUMNS, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=row_data.get(key, ""))
+            cell.alignment = WRAP
+            cell.fill = CELL_FILL
+
+    ws.freeze_panes = "A2"
+    ws.row_dimensions[1].height = 20
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    filename = f"units_{doc_id[:8]}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{doc_id}/download")
+async def download_document(dataset_id: str, doc_id: str):
+    """Download the original file for a document.
+
+    Works for both local and S3-backed files.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT file_name, file_path FROM documents WHERE id = ? AND dataset_id = ?",
+        (doc_id, dataset_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_name = row["file_name"]
+    file_path = row["file_path"]
+
+    if file_path.startswith("s3://"):
+        # Stream from S3
+        import io
+        from ..utils.s3 import download_file_from_s3
+        buf = io.BytesIO()
+        try:
+            import boto3
+            import re
+            m = re.match(r"s3://([^/]+)/(.+)", file_path)
+            if not m:
+                raise HTTPException(status_code=500, detail="Invalid S3 URL")
+            bucket, key = m.group(1), m.group(2)
+            s3 = boto3.client(
+                "s3",
+                aws_access_key_id=config.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=config.AWS_SECRET_KEY,
+            )
+            s3.download_fileobj(bucket, key, buf)
+            buf.seek(0)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to download from S3: {e}")
+        return StreamingResponse(
+            buf,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{file_name}"'},
+        )
+    else:
+        # Local file
+        p = Path(file_path)
+        if not p.is_absolute():
+            p = (config.RAG_SERVICE_DIR / p).resolve()
+        if not p.exists():
+            raise HTTPException(status_code=404, detail="File not found on disk")
+        return FileResponse(
+            path=str(p),
+            filename=file_name,
+            media_type="application/octet-stream",
+        )
 
 
 @router.get("/{doc_id}/views", response_model=ApiResponse[list])
@@ -544,6 +687,7 @@ def list_document_tasks(dataset_id: str, doc_id: str):
             dataset_id=str(row["dataset_id"]),
             doc_id=str(row["doc_id"]),
             mode=row["mode"] if "mode" in row.keys() else "classic",
+            reader=row["reader"] if "reader" in row.keys() else "mineru",
             status=row["status"],
             progress=row["progress"],
             metadata=doc_metadata,
@@ -838,7 +982,7 @@ async def upload_document_cache(
     Upload PDF parsing cache from worker.
     
     Worker calls this after processing a PDF to upload the cache directory.
-    The cache is extracted to PDF_CACHE_DIR/{doc_id}/ for later use by /locate API.
+    The cache is extracted to ARCHIVES_DIR/{doc_id}/ for later use by /locate API.
     
     Args:
         file: tar.gz archive of the cache directory
@@ -854,7 +998,7 @@ async def upload_document_cache(
         raise HTTPException(status_code=400, detail="File must be a .tar.gz archive")
     
     # Prepare cache directory
-    cache_dir = Path(config.PDF_CACHE_DIR) / doc_id
+    cache_dir = Path(config.ARCHIVES_DIR) / doc_id
     
     # Remove existing cache if present
     if cache_dir.exists():
@@ -870,7 +1014,7 @@ async def upload_document_cache(
         # Extract archive
         cache_dir.mkdir(parents=True, exist_ok=True)
         with tarfile.open(temp_file, "r:gz") as tar:
-            tar.extractall(path=Path(config.PDF_CACHE_DIR))
+            tar.extractall(path=Path(config.ARCHIVES_DIR))
         
         # Calculate size
         total_size = sum(f.stat().st_size for f in cache_dir.rglob('*') if f.is_file())
@@ -892,8 +1036,11 @@ async def upload_document_cache(
             shutil.rmtree(cache_dir)
         raise HTTPException(status_code=500, detail=f"Failed to process cache: {str(e)}")
     finally:
-        # Cleanup temp file
-        temp_file.unlink(missing_ok=True)
+        # Cleanup temp file (best-effort: on Windows the OS may still hold the lock)
+        try:
+            temp_file.unlink(missing_ok=True)
+        except OSError:
+            pass  # Windows: file lock not yet released, OS will clean up temp dir
 
 
 @router.post("/locate", response_model=ApiResponse[LocatePageResponse])
@@ -919,7 +1066,7 @@ async def locate_pages(
     from zag.utils.page_inference import fuzzy_find_start
     
     # Cache directory for PDF parsing results
-    cache_dir = Path(config.PDF_CACHE_DIR)
+    cache_dir = Path(config.ARCHIVES_DIR)
     
     # Group items by doc_id for efficient processing
     doc_groups: dict[str, list] = defaultdict(list)

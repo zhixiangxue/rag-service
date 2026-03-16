@@ -102,6 +102,7 @@ def init_db():
             dataset_id TEXT NOT NULL,
             doc_id TEXT NOT NULL,
             mode TEXT NOT NULL DEFAULT 'classic',
+            reader TEXT NOT NULL DEFAULT 'mineru',
             status TEXT NOT NULL,
             progress INTEGER DEFAULT 0,
             error_message TEXT,
@@ -130,7 +131,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_dependencies_dataset_rule
             ON dependencies(dataset_id, rule)
     """)
-    
+
     conn.commit()
     conn.close()
 

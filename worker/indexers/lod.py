@@ -16,14 +16,15 @@ from zag.storages.vector import QdrantVectorStore
 
 from zag.indexers import FullTextIndexer
 
-from ..constants import ProcessingMode
+from ..constants import ProcessingMode, ReaderType
 from ..exceptions import ProcessingError, ProcessingErrorCode
 from ..config import (
     LLM_PROVIDER, LLM_MODEL, LLM_API_KEY,
     EMBEDDING_URI, OPENAI_API_KEY,
     VECTOR_STORE_HOST, VECTOR_STORE_PORT,
     MEILISEARCH_HOST, MEILISEARCH_API_KEY,
-    PDF_CACHE_DIR,
+    ARCHIVES_DIR,
+    ANTHROPIC_API_KEY,
 ) 
 
 console = Console()
@@ -110,7 +111,8 @@ async def index_lod(
     on_progress: Optional[callable] = None,
     quick_check_target: int = 2000,
     shortlist_target: int = 60000,
-    vector_store_grpc_port: int = 6334
+    vector_store_grpc_port: int = 6334,
+    reader_name: str = ReaderType.DEFAULT
 ) -> Dict[str, Any]:
     """
     LOD indexing: index entire document with 4 views (LOW, MEDIUM, HIGH, FULL).
@@ -123,6 +125,7 @@ async def index_lod(
         quick_check_target: Target token count for Quick-Check layer (default: 2000)
         shortlist_target: Target token count for Shortlist layer (default: 60000)
         vector_store_grpc_port: Qdrant gRPC port
+        reader_name: Reader to use - 'mineru' (default) or 'claude'
     
     Returns:
         Processing result with lod_unit_id and views_count
@@ -167,26 +170,32 @@ async def index_lod(
     
     console.print(f"  Pages: {page_count} (✓ within limit)")
     
-    # Step 2: Read PDF with MinerU
-    console.print("[yellow]Step 2: Reading PDF with MinerU...[/yellow]")
+    # Step 2: Read PDF
+    reader_label = "Claude Vision" if reader_name == ReaderType.CLAUDE else "MinerU"
+    console.print(f"[yellow]Step 2: Reading PDF with {reader_label}...[/yellow]")
     if on_progress:
         await on_progress(10)
     
-    reader = MinerUReader(backend="pipeline")
-    doc = reader.read(str(file_path))
-
-    # Apply heading correction
-    console.print("  🔧 Correcting headings...")
-    corrector = HeadingCorrector(
-        llm_uri=f"{LLM_PROVIDER}/{LLM_MODEL}",
-        api_key=LLM_API_KEY,
-        llm_correction=True
-    )
-    doc = await corrector.acorrect_document(doc)
-    console.print("  ✅ Headings corrected")
+    if reader_name == ReaderType.CLAUDE:
+        from zag.readers import ClaudeVisionReader
+        pdf_reader_obj = ClaudeVisionReader(api_key=ANTHROPIC_API_KEY)
+        doc = pdf_reader_obj.read(str(file_path))
+        # Claude output is already well-structured, skip HeadingCorrector
+    else:
+        pdf_reader_obj = MinerUReader(backend="pipeline")
+        doc = pdf_reader_obj.read(str(file_path))
+        # Apply heading correction
+        console.print("  🔧 Correcting headings...")
+        corrector = HeadingCorrector(
+            llm_uri=f"{LLM_PROVIDER}/{LLM_MODEL}",
+            api_key=LLM_API_KEY,
+            llm_correction=True
+        )
+        doc = await corrector.acorrect_document(doc)
+        console.print("  ✅ Headings corrected")
     
     # Dump to cache for reuse
-    archive_path = doc.dump(PDF_CACHE_DIR)
+    archive_path = doc.dump(ARCHIVES_DIR)
     console.print(f"  💾 Cached: {archive_path}")
 
     lod_full = doc.content

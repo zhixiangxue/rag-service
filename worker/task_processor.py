@@ -18,7 +18,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from .constants import TaskStatus, ProcessingMode
+from .constants import TaskStatus, ProcessingMode, ReaderType
 from .exceptions import ProcessingError, TaskCancelledException
 from . import config
 from .indexers.classic import index_classic
@@ -178,6 +178,7 @@ async def process_single_task(task: Dict[str, Any]) -> int:
     dataset_id = task["dataset_id"]
     doc_id = task["doc_id"]
     mode = task.get("mode", "classic")
+    reader = task.get("reader", ReaderType.DEFAULT)
     custom_metadata = task.get("metadata")
     api_base_url = config.API_BASE_URL
     
@@ -235,6 +236,7 @@ async def process_single_task(task: Dict[str, Any]) -> int:
         
         mapping_table.add_row("File", "-->", file_path.name)
         mapping_table.add_row("Mode", "-->", mode.upper())
+        mapping_table.add_row("Reader", "-->", reader.upper())
         mapping_table.add_row("Collection", "-->", collection_name)
         mapping_table.add_row("Vector Store", "-->", f"Qdrant @ {config.VECTOR_STORE_HOST}:{config.VECTOR_STORE_PORT}")
         
@@ -275,7 +277,8 @@ async def process_single_task(task: Dict[str, Any]) -> int:
                 meilisearch_index_name=collection_name,
                 custom_metadata=custom_metadata,
                 on_progress=update_progress,
-                vector_store_grpc_port=config.VECTOR_STORE_GRPC_PORT
+                vector_store_grpc_port=config.VECTOR_STORE_GRPC_PORT,
+                reader_name=reader
             )
         else:  # classic mode
             result = await index_classic(
@@ -285,7 +288,8 @@ async def process_single_task(task: Dict[str, Any]) -> int:
                 meilisearch_index_name=collection_name,
                 custom_metadata=custom_metadata,
                 on_progress=update_progress,
-                vector_store_grpc_port=config.VECTOR_STORE_GRPC_PORT
+                vector_store_grpc_port=config.VECTOR_STORE_GRPC_PORT,
+                reader_name=reader
             )
         
         # Complete task
@@ -300,7 +304,7 @@ async def process_single_task(task: Dict[str, Any]) -> int:
         
         # Upload cache to RAG server for /locate API
         console.print("[dim]Uploading PDF cache to RAG server...[/dim]")
-        cache_dir = config.PDF_CACHE_DIR / doc_id
+        cache_dir = config.ARCHIVES_DIR / doc_id
         await upload_cache_to_api(api_base_url, dataset_id, doc_id, cache_dir)
         
         console.print(f"\n[bold green]✓ Task {task_id} completed[/bold green]")

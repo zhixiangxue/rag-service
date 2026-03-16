@@ -5,7 +5,7 @@ from rich.console import Console
 from typing import Dict, Any, Optional
 
 from ..processors.classic_processor import ClassicDocumentProcessor
-from ..constants import ProcessingMode
+from ..constants import ProcessingMode, ReaderType
 from ..config import (
     LLM_PROVIDER, LLM_MODEL, LLM_API_KEY,
     EMBEDDING_URI, OPENAI_API_KEY,
@@ -27,7 +27,8 @@ async def index_classic(
     meilisearch_index_name: str,
     custom_metadata: Optional[Dict[str, Any]] = None,
     on_progress: Optional[callable] = None,
-    vector_store_grpc_port: int = 6334
+    vector_store_grpc_port: int = 6334,
+    reader_name: str = ReaderType.DEFAULT
 ) -> Dict[str, Any]:
     """
     Classic RAG indexing: split document into chunks and index.
@@ -43,6 +44,7 @@ async def index_classic(
         custom_metadata: Optional business metadata
         on_progress: Optional progress callback function(progress: int)
         vector_store_grpc_port: Qdrant gRPC port
+        reader_name: Reader to use - 'mineru' (default) or 'claude'
     
     Returns:
         Processing result with unit_count and other stats
@@ -89,7 +91,8 @@ async def index_classic(
     
     doc = await processor.read_document(
         pdf_path=file_path,
-        max_pages_per_part=MAX_PAGES_PER_PART
+        max_pages_per_part=MAX_PAGES_PER_PART,
+        reader_name=reader_name
     )
     
     await report_progress(25)

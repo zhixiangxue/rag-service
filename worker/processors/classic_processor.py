@@ -47,8 +47,8 @@ from zag.schemas.pdf import PDF
 from zag.schemas.unit import TextUnit, TableUnit
 from zag.utils.hash import calculate_file_hash
 
-from ..constants import ProcessingMode
-from ..config import LLM_PROVIDER, LLM_MODEL, LLM_API_KEY, PDF_CACHE_DIR
+from ..constants import ProcessingMode, ReaderType
+from ..config import LLM_PROVIDER, LLM_MODEL, LLM_API_KEY, ARCHIVES_DIR
 
 console = Console()
 
@@ -263,14 +263,16 @@ class ClassicDocumentProcessor:
     async def _read_single_part(
         self,
         pdf_path: Path,
-        page_range: Optional[tuple] = None
+        page_range: Optional[tuple] = None,
+        reader_name: str = ReaderType.DEFAULT
     ) -> PDF:
         """
-        Read a single PDF part with MinerU + HeadingCorrection (with automatic retry)
+        Read a single PDF part with chosen reader + optional HeadingCorrection.
 
         Args:
             pdf_path: Path to PDF file
             page_range: Optional page range tuple (start, end) 1-based inclusive
+            reader_name: Reader to use - 'mineru' (default) or 'claude'
 
         Returns:
             PDF document object
@@ -278,29 +280,37 @@ class ClassicDocumentProcessor:
         Note:
             - Automatically retries up to 3 times on TimeoutError
             - Waits 10 seconds between retries
-            - This is a private method called by read_document()
+            - HeadingCorrector is skipped for 'claude' reader (already clean output)
         """
-        # Parse PDF with MinerU
         range_str = f" (pages {page_range[0]}-{page_range[1]})" if page_range else ""
-        console.print(f"📄 Parsing PDF with MinerU{range_str}: {pdf_path.name}")
 
-        from zag.readers import MinerUReader
-        reader = MinerUReader()
-        doc = reader.read(str(pdf_path), page_range=page_range)
+        if reader_name == "claude":
+            # Use Claude Vision reader - no HeadingCorrector needed
+            from zag.readers import ClaudeVisionReader
+            from ..config import ANTHROPIC_API_KEY
+            console.print(f"[yellow]📸 Claude Vision: {pdf_path.name}{range_str}[/yellow]")
+            reader = ClaudeVisionReader(api_key=ANTHROPIC_API_KEY)
+            doc = reader.read(str(pdf_path), page_range=page_range)
+        else:
+            # Use MinerU reader (default) + HeadingCorrector
+            console.print(f"📄 Parsing PDF with MinerU{range_str}: {pdf_path.name}")
+            from zag.readers import MinerUReader
+            reader = MinerUReader()
+            doc = reader.read(str(pdf_path), page_range=page_range)
 
-        # Apply heading correction
-        console.print("  🔧 Correcting headings...")
-        corrector = HeadingCorrector(
-            llm_uri=f"{LLM_PROVIDER}/{LLM_MODEL}",
-            api_key=LLM_API_KEY,
-            llm_correction=True
-        )
-        doc = await corrector.acorrect_document(doc)
-        console.print("  ✅ Headings corrected")
+            # Apply heading correction
+            console.print("  🔧 Correcting headings...")
+            corrector = HeadingCorrector(
+                llm_uri=f"{LLM_PROVIDER}/{LLM_MODEL}",
+                api_key=LLM_API_KEY,
+                llm_correction=True
+            )
+            doc = await corrector.acorrect_document(doc)
+            console.print("  ✅ Headings corrected")
 
         console.print(f"  ✅ Parsed {len(doc.content):,} characters")
         console.print(f"  ✅ Pages: {len(doc.pages)}")
-        if doc.metadata.custom:
+        if doc.metadata and doc.metadata.custom:
             console.print(
                 f"  ✅ Text items: {doc.metadata.custom.get('text_items_count', 0)}")
             console.print(
@@ -311,30 +321,24 @@ class ClassicDocumentProcessor:
     async def read_document(
         self,
         pdf_path: Path,
-        max_pages_per_part: int = 100
+        max_pages_per_part: int = 100,
+        reader_name: str = ReaderType.DEFAULT
     ) -> PDF:
         """
-        Read PDF document with automatic chunking for large files
+        Read PDF document with automatic chunking for large files.
 
         Automatically splits large files into parts, reads each part with retry,
-        applies heading correction, and merges. Supports checkpoint recovery at
-        part level for maximum resilience.
+        applies heading correction (MinerU only), and merges. Supports checkpoint
+        recovery at part level for maximum resilience.
 
         Args:
             pdf_path: Path to PDF file
             max_pages_per_part: Maximum pages per part (default: 100)
                                Files with more pages will be split automatically
+            reader_name: Reader to use - 'mineru' (default) or 'claude'
 
         Returns:
             PDF document object
-
-        Note:
-            - Small files (≤max_pages_per_part): Read directly
-            - Large files: Split into parts, read each with retry, then merge
-            - Part-level checkpoint: If part 3/5 fails, restarts from part 3
-            - Each part gets HeadingCorrection before merging
-            - Final merged document uses consistent doc_id
-            - GPU memory: Single-threaded to avoid OOM (one part at a time)
         """
         self.pdf_path = Path(pdf_path)
         if not self.pdf_path.exists():
@@ -364,7 +368,11 @@ class ClassicDocumentProcessor:
 
             console.print(
                 f"\n[cyan]--- Reading part {part.start_page}-{part.end_page} ---[/cyan]")
-            part_doc = await self._read_single_part(self.pdf_path, (part.start_page, part.end_page))
+            part_doc = await self._read_single_part(
+                self.pdf_path,
+                (part.start_page, part.end_page),
+                reader_name=reader_name
+            )
 
             # Store the processed part document
             part.completed = True
@@ -400,8 +408,8 @@ class ClassicDocumentProcessor:
         # Dump to cache for reuse (best effort, failure is acceptable)
         try:
             console.print(f"\n💾 Caching document...")
-            # Use global PDF_CACHE_DIR for consistency with LOD mode
-            archive_path = self.document.dump(PDF_CACHE_DIR)
+            # Use global ARCHIVES_DIR for consistency with LOD mode
+            archive_path = self.document.dump(ARCHIVES_DIR)
             console.print(f"   ✅ Cached: {archive_path}")
         except Exception as e:
             console.print(

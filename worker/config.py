@@ -72,6 +72,7 @@ EMBEDDING_URI = require_env("EMBEDDING_URI", "openai/text-embedding-3-small")
 OPENAI_API_KEY = require_env("OPENAI_API_KEY")
 BAILIAN_API_KEY = os.getenv("BAILIAN_API_KEY")  # Optional
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")  # Optional
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")  # Required when using claude reader
 
 # ============================================
 # LLM Configuration (for extractors)
@@ -139,4 +140,4 @@ AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
 # ============================================
 # Directory for cached PDF parsing results (from MinerUReader)
 # Worker reads from here and uploads to RAG server
-PDF_CACHE_DIR = Path(os.getenv("PDF_CACHE_DIR", str(Path.home() / ".zag" / "cache" / "readers" / "mineru")))
+ARCHIVES_DIR = Path(os.getenv("ARCHIVES_DIR", str(Path.home() / ".zag" / "cache" / "archives")))

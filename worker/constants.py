@@ -15,3 +15,10 @@ class ProcessingMode:
     CLASSIC = "classic"
     LOD = "lod"
     GRAPH = "graph"
+
+
+class ReaderType:
+    """Document reader type constants."""
+    DEFAULT = "mineru"  # Change this to switch the global default reader
+    MINERU = "mineru"
+    CLAUDE = "claude"

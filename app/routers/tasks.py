@@ -9,7 +9,8 @@ from ..schemas import (
     TaskResponse,
     TaskStatusUpdate,
     ApiResponse,
-    MessageResponse
+    MessageResponse,
+    ReaderType
 )
 from ..constants import TaskStatus, DocumentStatus
 
@@ -56,6 +57,8 @@ def get_all_tasks(limit: int = 10, status: Optional[str] = None):
             task_id=str(row["id"]),
             dataset_id=str(row["dataset_id"]),
             doc_id=str(row["doc_id"]),
+            mode=row["mode"] if "mode" in row.keys() else "classic",
+            reader=row["reader"] if "reader" in row.keys() else ReaderType.DEFAULT,
             status=row["status"],
             progress=row["progress"],
             error_message=error_message,
@@ -85,7 +88,7 @@ def claim_task():
             # Find first pending task
             cursor.execute(
                 """
-                SELECT t.id, t.dataset_id, t.doc_id, t.mode, t.created_at, d.metadata as doc_metadata
+                SELECT t.id, t.dataset_id, t.doc_id, t.mode, t.reader, t.created_at, d.metadata as doc_metadata
                 FROM tasks t
                 JOIN documents d ON t.doc_id = d.id
                 WHERE t.status = ? 
@@ -124,11 +127,14 @@ def claim_task():
             conn.commit()
             conn.close()
             
+            reader = row["reader"] if "reader" in row.keys() and row["reader"] else ReaderType.DEFAULT
+
             data = TaskResponse(
                 task_id=str(task_id),
                 dataset_id=str(dataset_id),
                 doc_id=str(doc_id),
                 mode=mode,
+                reader=reader,
                 status=TaskStatus.PROCESSING,
                 progress=0,
                 metadata=metadata,
@@ -216,6 +222,7 @@ def get_task(task_id: str):
         dataset_id=str(row["dataset_id"]),
         doc_id=str(row["doc_id"]),
         mode=row["mode"] if "mode" in row.keys() else "classic",
+        reader=row["reader"] if "reader" in row.keys() else ReaderType.DEFAULT,
         status=row["status"],
         progress=row["progress"],
         error_message=error_message,
@@ -350,6 +357,7 @@ def update_task(task_id: str, update: TaskStatusUpdate):
         dataset_id=str(row["dataset_id"]),
         doc_id=str(row["doc_id"]),
         mode=row["mode"] if "mode" in row.keys() else "classic",
+        reader=row["reader"] if "reader" in row.keys() else ReaderType.DEFAULT,
         status=row["status"],
         progress=row["progress"],
         error_message=error_message,
