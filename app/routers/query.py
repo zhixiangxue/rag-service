@@ -1,9 +1,14 @@
 """Query API endpoints."""
+import logging
 from fastapi import APIRouter, HTTPException
 from typing import List, Tuple, Dict, Any, Optional
 from cachetools import cached, TTLCache
 from cachetools.keys import hashkey
 import threading
+import traceback
+import asyncio
+
+logger = logging.getLogger("rag.query")
 
 from ..schemas import QueryRequest, UnitResponse, ApiResponse, TreeQueryRequest, _extract_tags
 from ..database import get_connection
@@ -20,6 +25,83 @@ router = APIRouter(prefix="/datasets", tags=["query"])
 # Global cache for dataset info
 _dataset_cache = TTLCache(maxsize=1000, ttl=300)  # 5 minutes TTL
 _cache_lock = threading.RLock()
+
+# Singletons: embedder and reranker are config-driven and shared across all requests.
+# vector_store and fulltext_retriever depend on collection_name so they are keyed by collection.
+_embedder: Optional[Any] = None
+_reranker: Optional[Any] = None
+_vector_store_cache: Dict[str, Any] = {}
+_fulltext_retriever_cache: Dict[str, Any] = {}
+_singleton_lock = threading.Lock()
+
+# Limits concurrent Cohere rerank calls to prevent burst 429 / connection failures.
+# Created lazily inside the event loop (asyncio.Semaphore must run in a loop context).
+# Each uvicorn worker process has its own semaphore instance.
+_rerank_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_embedder() -> Any:
+    """Return a cached Embedder singleton (created once, reused for all requests)."""
+    global _embedder
+    if _embedder is None:
+        with _singleton_lock:
+            if _embedder is None:
+                _embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
+    return _embedder
+
+
+def _get_vector_store(collection_name: str) -> Any:
+    """Return a cached QdrantVectorStore for the given collection.
+
+    gRPC channel setup to a remote host takes ~2-7s; caching the client
+    eliminates that overhead on every query request.
+
+    Note: _get_embedder() is called outside the lock to avoid deadlock —
+    _get_embedder() also acquires _singleton_lock, and threading.Lock is
+    non-reentrant.
+    """
+    if collection_name not in _vector_store_cache:
+        embedder = _get_embedder()  # resolve outside the lock to avoid deadlock
+        with _singleton_lock:
+            if collection_name not in _vector_store_cache:
+                _vector_store_cache[collection_name] = QdrantVectorStore.server(
+                    host=config.VECTOR_STORE_HOST,
+                    port=config.VECTOR_STORE_PORT,
+                    grpc_port=config.VECTOR_STORE_GRPC_PORT,
+                    prefer_grpc=True,
+                    collection_name=collection_name,
+                    embedder=embedder,
+                    timeout=60,
+                )
+    return _vector_store_cache[collection_name]
+
+
+def _get_fulltext_retriever(collection_name: str, top_k: int = 10) -> Any:
+    """Return a cached FullTextRetriever for the given collection.
+
+    FullTextRetriever.__init__ calls meilisearch.Client.get_index() which is a
+    synchronous HTTP request.  Caching avoids that blocking call on every query.
+    """
+    if collection_name not in _fulltext_retriever_cache:
+        with _singleton_lock:
+            if collection_name not in _fulltext_retriever_cache:
+                _fulltext_retriever_cache[collection_name] = FullTextRetriever(
+                    url=config.MEILISEARCH_HOST,
+                    index_name=collection_name,
+                    api_key=config.MEILISEARCH_API_KEY,
+                    top_k=top_k,
+                )
+    return _fulltext_retriever_cache[collection_name]
+
+
+def _get_reranker() -> Any:
+    """Return a cached Reranker singleton."""
+    global _reranker
+    if _reranker is None:
+        with _singleton_lock:
+            if _reranker is None:
+                _reranker = Reranker(config.RERANKER_URI, api_key=config.COHERE_API_KEY)
+    return _reranker
 
 
 @cached(_dataset_cache, key=lambda dataset_id: hashkey(dataset_id), lock=_cache_lock)
@@ -58,47 +140,38 @@ def clear_dataset_cache(dataset_id: str):
         _dataset_cache.pop(cache_key, None)
 
 
-def _rewrite_for_fulltext(query: str) -> str:
-    """Rewrite natural language query to keyword form for BM25 fulltext search.
 
-    Falls back to the original query on any error to avoid blocking the pipeline.
-    """
-    try:
-        import chak
-        conv = chak.Conversation(f"{config.LLM_PROVIDER}/{config.LLM_MODEL}", api_key=config.LLM_API_KEY)
-        prompt = (
-            "Extract the most important search keywords from the following question "
-            "for a full-text search engine (BM25). "
-            "Output only the keywords separated by spaces, no punctuation, no explanation.\n\n"
-            f"Question: {query}"
-        )
-        response = conv.send(prompt)
-        keywords = response.content.strip()
-        return keywords if keywords else query
-    except Exception as e:
-        print(f"[WARN] fulltext query rewrite failed, using original: {e}")
-        return query
-
-
-def _rerank_units(
+async def _rerank_units(
     query: str,
     units: list[Any],
     top_k: Optional[int] = None,
 ) -> list[Any]:
-    """Apply reranker to units.
+    """Apply reranker to units (async, does not block the event loop).
 
-    Uses RERANKER_URI from app config. On any error, returns the original
-    units to avoid breaking the query pipeline.
+    Uses reranker.arerank() for providers that support async (e.g. Cohere AsyncClient).
+    Falls back to asyncio.to_thread for providers without async support.
+    A per-worker Semaphore caps concurrent Cohere calls at 15 to prevent burst
+    rate-limit errors (429) and connection failures under high load.
+    On any error, returns the original units to avoid breaking the query pipeline.
     """
     if not units:
         return []
 
+    global _rerank_semaphore
+    if _rerank_semaphore is None:
+        # Lazy-init inside event loop: asyncio.Semaphore must be created here.
+        _rerank_semaphore = asyncio.Semaphore(25)
+
     try:
-        reranker = Reranker(config.RERANKER_URI, api_key=config.COHERE_API_KEY)
-        return reranker.rerank(query, units, top_k=top_k)
+        reranker = _get_reranker()
+        async with _rerank_semaphore:
+            if hasattr(reranker, 'arerank'):
+                return await reranker.arerank(query, units, top_k)
+            else:
+                return await asyncio.to_thread(reranker.rerank, query, units, top_k)
     except Exception as e:
         # Best-effort reranking: log and fall back to original units
-        print(f"[WARN] Reranking failed, using original units: {e}")
+        logger.warning("Reranking failed, using original units: %s", e)
         return units
 
 
@@ -126,32 +199,23 @@ async def _perform_vector_query(dataset_id: str, request: QueryRequest) -> ApiRe
     try:
         # Get dataset info from cache or database
         collection_name, engine = get_dataset_info(dataset_id)
-        
-        # Initialize embedder
-        embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
-        
-        # Initialize vector store
-        vector_store = QdrantVectorStore.server(
-            host=config.VECTOR_STORE_HOST,
-            port=config.VECTOR_STORE_PORT,
-            prefer_grpc=False,
-            collection_name=collection_name,
-            embedder=embedder,
-            timeout=60
-        )
-        
-        # Initialize retriever
+        # Cache-hit is an O(1) dict lookup — call directly without a thread.
+        # Only use asyncio.to_thread on first call (gRPC channel setup blocks ~2-5s).
+        if collection_name in _vector_store_cache:
+            vector_store = _get_vector_store(collection_name)
+        else:
+            vector_store = await asyncio.to_thread(_get_vector_store, collection_name)
         retriever = VectorRetriever(vector_store=vector_store)
         
         # Perform search
-        units = retriever.retrieve(
+        units = await retriever.aretrieve(
             query=request.query,
             top_k=request.top_k,
             filters=request.filters
         )
         
         # Rerank then filter by score threshold
-        units = _rerank_units(request.query, units, top_k=request.top_k)
+        units = await _rerank_units(request.query, units, top_k=request.top_k)
         units = _filter_by_score(units, request.min_score)
 
         # Build response
@@ -176,6 +240,7 @@ async def _perform_vector_query(dataset_id: str, request: QueryRequest) -> ApiRe
         )
         
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Vector search failed: {str(e)}")
 
 
@@ -225,23 +290,27 @@ async def query_fulltext(dataset_id: str, request: QueryRequest):
         # Get dataset info from cache or database
         collection_name, engine = get_dataset_info(dataset_id)
         
-        # Initialize full-text retriever (index name mirrors collection_name convention)
-        retriever = FullTextRetriever(
-            url=config.MEILISEARCH_HOST,
-            index_name=collection_name,
-            api_key=config.MEILISEARCH_API_KEY,
-            top_k=request.top_k or 10
-        )
+        # Use cached retriever to avoid meilisearch.get_index() on every request
+        api_top_k = request.top_k or 10
+        if collection_name in _fulltext_retriever_cache:
+            retriever = _get_fulltext_retriever(collection_name, api_top_k)
+        else:
+            retriever = await asyncio.to_thread(_get_fulltext_retriever, collection_name, api_top_k)
         
         # Perform full-text search
-        units = retriever.retrieve(
+        import time as _t
+        _t0 = _t.perf_counter()
+        units = await retriever.aretrieve(
             query=request.query,
             top_k=request.top_k,
             filters=request.filters
         )
+        logger.debug("[FT] meilisearch: %.2fs, hits=%d", _t.perf_counter()-_t0, len(units))
         
         # Rerank then filter by score threshold
-        units = _rerank_units(request.query, units, top_k=request.top_k)
+        _t1 = _t.perf_counter()
+        units = await _rerank_units(request.query, units, top_k=request.top_k)
+        logger.debug("[FT] rerank: %.2fs", _t.perf_counter()-_t1)
         units = _filter_by_score(units, request.min_score)
 
         # Build response
@@ -269,6 +338,7 @@ async def query_fulltext(dataset_id: str, request: QueryRequest):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Fulltext search failed: {str(e)}")
 
 
@@ -284,42 +354,45 @@ async def query_fusion(dataset_id: str, request: QueryRequest):
     natural language queries into BM25-friendly keywords before retrieval.
     """
     try:
+        import time as _time
         # Get dataset info
         collection_name, engine = get_dataset_info(dataset_id)
-
-        # Initialize embedder and vector store
-        embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
-        vector_store = QdrantVectorStore.server(
-            host=config.VECTOR_STORE_HOST,
-            port=config.VECTOR_STORE_PORT,
-            prefer_grpc=False,
-            collection_name=collection_name,
-            embedder=embedder,
-            timeout=60,
-        )
 
         # Determine recall sizes
         api_top_k = request.top_k or 5
         recall_top_k = api_top_k * 2
 
+        # Initialize vector store and fulltext retriever.
+        # Cache-hit is an O(1) dict lookup — no thread needed.
+        # Only use asyncio.to_thread on first call (blocking IO on cache miss).
+        _t0 = _time.perf_counter()
+        need_init = (
+            collection_name not in _vector_store_cache
+            or collection_name not in _fulltext_retriever_cache
+        )
+        if need_init:
+            vector_store, base_ft_retriever = await asyncio.gather(
+                asyncio.to_thread(_get_vector_store, collection_name),
+                asyncio.to_thread(_get_fulltext_retriever, collection_name, recall_top_k),
+            )
+        else:
+            vector_store = _get_vector_store(collection_name)
+            base_ft_retriever = _get_fulltext_retriever(collection_name, recall_top_k)
+        logger.debug("[fusion] init: %.2fs", _time.perf_counter()-_t0)
+
         # Vector retriever uses the original natural language query
         vector_retriever = VectorRetriever(vector_store=vector_store)
 
-        # Fulltext retriever wrapped with query rewrite for BM25 keyword recall
-        ft_rewrite_fn = (
-            (lambda q: request.fulltext_query)
-            if request.fulltext_query
-            else _rewrite_for_fulltext
-        )
-        fulltext_retriever = QueryRewriteRetriever(
-            retriever=FullTextRetriever(
-                url=config.MEILISEARCH_HOST,
-                index_name=collection_name,
-                api_key=config.MEILISEARCH_API_KEY,
-                top_k=recall_top_k,
-            ),
-            rewrite_fn=ft_rewrite_fn,
-        )
+        # Fulltext retriever: pass the query directly to BM25.
+        # Meilisearch handles natural language queries well without LLM rewrite.
+        # If the caller provides an explicit fulltext_query override, honour it.
+        if request.fulltext_query:
+            fulltext_retriever = QueryRewriteRetriever(
+                retriever=base_ft_retriever,
+                rewrite_fn=lambda q: request.fulltext_query,
+            )
+        else:
+            fulltext_retriever = base_ft_retriever
 
         # Fuse both recall channels concurrently
         fusion_retriever = QueryFusionRetriever(
@@ -327,14 +400,18 @@ async def query_fusion(dataset_id: str, request: QueryRequest):
             mode=FusionMode.RECIPROCAL_RANK,
             top_k=recall_top_k,
         )
+        _t1 = _time.perf_counter()
         units = await fusion_retriever.aretrieve(
             query=request.query,
             top_k=recall_top_k,
             filters=request.filters,
         )
+        logger.debug("[fusion] retrieve: %.2fs", _time.perf_counter()-_t1)
 
         # Rerank then filter by score threshold
-        units = _rerank_units(request.query, units, top_k=api_top_k)
+        _t2 = _time.perf_counter()
+        units = await _rerank_units(request.query, units, top_k=api_top_k)
+        logger.debug("[fusion] rerank: %.2fs", _time.perf_counter()-_t2)
         units = _filter_by_score(units, request.min_score)
 
         # Build response
@@ -358,6 +435,7 @@ async def query_fusion(dataset_id: str, request: QueryRequest):
         return ApiResponse(success=True, code=200, data=unit_responses)
 
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Fusion search failed: {str(e)}")
 
 
@@ -421,20 +499,8 @@ async def query_tree_simple(dataset_id: str, request: TreeQueryRequest):
         # Get dataset info
         collection_name, engine = get_dataset_info(dataset_id)
         
-        # Initialize embedder
-        embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
-        
-        # Initialize vector store
-        vector_store = QdrantVectorStore.server(
-            host=config.VECTOR_STORE_HOST,
-            port=config.VECTOR_STORE_PORT,
-            prefer_grpc=False,
-            collection_name=collection_name,
-            embedder=embedder,
-            timeout=60
-        )
-        
-        # Initialize SimpleRetriever
+        # Use cached embedder and vector store
+        vector_store = await asyncio.to_thread(_get_vector_store, collection_name)
         from zag.retrievers.tree import SimpleRetriever
         retriever = SimpleRetriever(
             vector_store=vector_store,
@@ -484,20 +550,8 @@ async def query_tree_mcts(dataset_id: str, request: TreeQueryRequest):
         # Get dataset info
         collection_name, engine = get_dataset_info(dataset_id)
         
-        # Initialize embedder
-        embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
-        
-        # Initialize vector store
-        vector_store = QdrantVectorStore.server(
-            host=config.VECTOR_STORE_HOST,
-            port=config.VECTOR_STORE_PORT,
-            prefer_grpc=False,
-            collection_name=collection_name,
-            embedder=embedder,
-            timeout=60
-        )
-        
-        # Initialize MCTSRetriever
+        # Use cached embedder and vector store
+        vector_store = await asyncio.to_thread(_get_vector_store, collection_name)
         from zag.retrievers.tree import MCTSRetriever
         retriever = MCTSRetriever.from_preset(
             preset_name=request.preset,
@@ -547,20 +601,8 @@ async def query_tree_skeleton(dataset_id: str, request: TreeQueryRequest):
         # Get dataset info
         collection_name, engine = get_dataset_info(dataset_id)
         
-        # Initialize embedder
-        embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
-        
-        # Initialize vector store
-        vector_store = QdrantVectorStore.server(
-            host=config.VECTOR_STORE_HOST,
-            port=config.VECTOR_STORE_PORT,
-            prefer_grpc=False,
-            collection_name=collection_name,
-            embedder=embedder,
-            timeout=60
-        )
-        
-        # Initialize SkeletonRetriever
+        # Use cached embedder and vector store
+        vector_store = await asyncio.to_thread(_get_vector_store, collection_name)
         from zag.retrievers.tree import SkeletonRetriever
         retriever = SkeletonRetriever(
             llm_uri=f"{config.LLM_PROVIDER}/{config.LLM_MODEL}",

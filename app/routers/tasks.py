@@ -70,7 +70,7 @@ def get_all_tasks(limit: int = 10, status: Optional[str] = None):
 
 
 @router.post("/tasks/claim", response_model=ApiResponse[TaskResponse])
-def claim_task():
+async def claim_task():
     """Atomically claim a pending task (for worker).
     
     This endpoint uses application-level locking to ensure only one worker 
@@ -79,78 +79,86 @@ def claim_task():
     
     Thread-safe and database-agnostic.
     """
-    # Acquire global lock to prevent race conditions
-    with _task_claim_lock:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        try:
-            # Find first pending task
-            cursor.execute(
-                """
-                SELECT t.id, t.dataset_id, t.doc_id, t.mode, t.reader, t.created_at, d.metadata as doc_metadata
-                FROM tasks t
-                JOIN documents d ON t.doc_id = d.id
-                WHERE t.status = ? 
-                ORDER BY t.created_at ASC 
-                LIMIT 1
-                """,
-                (TaskStatus.PENDING,)
-            )
-            row = cursor.fetchone()
-            
-            if not row:
-                conn.close()
-                raise HTTPException(status_code=404, detail="No pending tasks available")
-            
-            task_id = row["id"]
-            dataset_id = row["dataset_id"]
-            doc_id = row["doc_id"]
-            mode = row["mode"] if row["mode"] else "classic"
-            created_at = row["created_at"]
-            metadata = json.loads(row["doc_metadata"]) if row["doc_metadata"] else None
-            
-            timestamp = now()
-            
-            # Update task status to PROCESSING
-            cursor.execute(
-                "UPDATE tasks SET status = ?, progress = 0, updated_at = ? WHERE id = ?",
-                (TaskStatus.PROCESSING, timestamp, task_id)
-            )
-            conn.commit()
-            
-            # Update document status to PROCESSING
-            cursor.execute(
-                "UPDATE documents SET status = ?, updated_at = ? WHERE id = ?",
-                (DocumentStatus.PROCESSING, timestamp, doc_id)
-            )
-            conn.commit()
-            conn.close()
-            
-            reader = row["reader"] if "reader" in row.keys() and row["reader"] else ReaderType.DEFAULT
+    import asyncio
 
-            data = TaskResponse(
-                task_id=str(task_id),
-                dataset_id=str(dataset_id),
-                doc_id=str(doc_id),
-                mode=mode,
-                reader=reader,
-                status=TaskStatus.PROCESSING,
-                progress=0,
-                metadata=metadata,
-                error_message=None,
-                created_at=created_at,
-                updated_at=timestamp
-            )
+    def _do_claim():
+        # Acquire global lock to prevent race conditions
+        with _task_claim_lock:
+            conn = get_connection()
+            cursor = conn.cursor()
             
-            return ApiResponse(success=True, code=200, message="Task claimed successfully", data=data)
-            
-        except HTTPException:
-            # Re-raise HTTP exceptions (like 404)
-            raise
-        except Exception as e:
-            conn.close()
-            raise HTTPException(status_code=500, detail=f"Failed to claim task: {str(e)}")
+            try:
+                # Find first pending task
+                cursor.execute(
+                    """
+                    SELECT t.id, t.dataset_id, t.doc_id, t.mode, t.reader, t.created_at, d.metadata as doc_metadata
+                    FROM tasks t
+                    JOIN documents d ON t.doc_id = d.id
+                    WHERE t.status = ? 
+                    ORDER BY t.created_at ASC 
+                    LIMIT 1
+                    """,
+                    (TaskStatus.PENDING,)
+                )
+                row = cursor.fetchone()
+                
+                if not row:
+                    conn.close()
+                    return None  # signal: no pending tasks
+                
+                task_id = row["id"]
+                dataset_id = row["dataset_id"]
+                doc_id = row["doc_id"]
+                mode = row["mode"] if row["mode"] else "classic"
+                created_at = row["created_at"]
+                metadata = json.loads(row["doc_metadata"]) if row["doc_metadata"] else None
+                
+                timestamp = now()
+                
+                # Update task status to PROCESSING
+                cursor.execute(
+                    "UPDATE tasks SET status = ?, progress = 0, updated_at = ? WHERE id = ?",
+                    (TaskStatus.PROCESSING, timestamp, task_id)
+                )
+                conn.commit()
+                
+                # Update document status to PROCESSING
+                cursor.execute(
+                    "UPDATE documents SET status = ?, updated_at = ? WHERE id = ?",
+                    (DocumentStatus.PROCESSING, timestamp, doc_id)
+                )
+                conn.commit()
+                conn.close()
+                
+                reader = row["reader"] if "reader" in row.keys() and row["reader"] else ReaderType.DEFAULT
+
+                return TaskResponse(
+                    task_id=str(task_id),
+                    dataset_id=str(dataset_id),
+                    doc_id=str(doc_id),
+                    mode=mode,
+                    reader=reader,
+                    status=TaskStatus.PROCESSING,
+                    progress=0,
+                    metadata=metadata,
+                    error_message=None,
+                    created_at=created_at,
+                    updated_at=timestamp
+                )
+                
+            except Exception as e:
+                conn.close()
+                raise RuntimeError(f"Failed to claim task: {str(e)}")
+
+    try:
+        data = await asyncio.to_thread(_do_claim)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if data is None:
+        raise HTTPException(status_code=404, detail="No pending tasks available")
+
+    return ApiResponse(success=True, code=200, message="Task claimed successfully", data=data)
 
 
 @router.get("/tasks/stats", response_model=ApiResponse[dict])

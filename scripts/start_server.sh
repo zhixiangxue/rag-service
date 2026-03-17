@@ -19,7 +19,7 @@ cd "$RAG_SERVICE_DIR"
 # Validate rag-service directory structure
 if [ ! -f "$RAG_SERVICE_DIR/app/main.py" ]; then
     echo ""
-    echo "❌ ERROR: Invalid rag-service directory structure"
+    echo "ERROR: Invalid rag-service directory structure"
     echo "Expected: $RAG_SERVICE_DIR/app/main.py"
     echo ""
     echo "This script must be run from:"
@@ -29,7 +29,7 @@ if [ ! -f "$RAG_SERVICE_DIR/app/main.py" ]; then
     exit 1
 fi
 
-echo "[1/3] Working directory: $RAG_SERVICE_DIR"
+echo "[1/4] Working directory: $RAG_SERVICE_DIR"
 
 # Function to find virtual environment
 find_venv() {
@@ -58,11 +58,11 @@ find_venv() {
 VENV_PATH=$(find_venv "$RAG_SERVICE_DIR")
 
 if [ -n "$VENV_PATH" ]; then
-    echo "[2/3] Virtual environment: $VENV_PATH"
+    echo "[2/4] Virtual environment: $VENV_PATH"
     source "$VENV_PATH"
 else
     echo ""
-    echo "❌ ERROR: Virtual environment not found"
+    echo "ERROR: Virtual environment not found"
     echo "Searched in:"
     echo "  - $RAG_SERVICE_DIR/.venv"
     echo "  - $RAG_SERVICE_DIR/venv"
@@ -75,9 +75,34 @@ else
     exit 1
 fi
 
-# Run as module from rag-service directory
-echo "[3/3] Starting server (python -m app.main)..."
+# Check gunicorn is installed
+if ! command -v gunicorn &> /dev/null; then
+    echo ""
+    echo "ERROR: gunicorn not found. Install it first:"
+    echo "  pip install gunicorn"
+    echo ""
+    exit 1
+fi
+
+# Worker count = number of CPU cores (async IO-bound, no CPU bottleneck)
+# Override with WORKERS env var if set, e.g.: WORKERS=8 ./scripts/start_server.sh
+WORKERS="${WORKERS:-$(nproc)}"
+
+echo "[3/4] Workers: $WORKERS (cores: $(nproc))"
+
+# Run with gunicorn + UvicornWorker
+# - Supports graceful rolling restart (kill -HUP <pid>)
+# - Each worker is a full uvicorn async event loop
+# - --timeout 0: disable sync worker timeout (all handlers are async)
+echo "[4/4] Starting server (gunicorn, $WORKERS workers)..."
 echo ""
 echo "========================================"
 echo ""
-python -m app.main
+exec gunicorn app.main:app \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --workers "$WORKERS" \
+    --bind 0.0.0.0:8000 \
+    --timeout 0 \
+    --keep-alive 180 \
+    --access-logfile /dev/null \
+    --error-logfile -

@@ -48,7 +48,8 @@ def _get_vector_store(dataset_id: str, with_embedder: bool = False):
         return QdrantVectorStore.server(
             host=config.VECTOR_STORE_HOST,
             port=config.VECTOR_STORE_PORT,
-            prefer_grpc=False,
+            grpc_port=config.VECTOR_STORE_GRPC_PORT,
+            prefer_grpc=True,
             collection_name=collection_name,
             embedder=embedder,
             timeout=60

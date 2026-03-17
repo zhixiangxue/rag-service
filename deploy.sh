@@ -214,7 +214,6 @@ echo ""
 
 # Step 5: Install chak-ai from GitHub
 echo -e "${GREEN}[5/9] Installing chak-ai from GitHub...${NC}"
-pip install --force-reinstall --no-cache-dir "chakpy @ git+https://github.com/zhixiangxue/chak-ai.git"
 echo ""
 
 # Step 5.5: Install MinerU

@@ -194,7 +194,7 @@ class RagWorker:
         Returns:
             Task data if available, None if no tasks or claim failed
         """
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             try:
                 response = await client.post(f"{self.api_base_url}/tasks/claim")
                 response.raise_for_status()

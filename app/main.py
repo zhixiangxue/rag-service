@@ -1,6 +1,8 @@
 """FastAPI application entry point."""
 import sys
-from fastapi import FastAPI
+import time
+import logging
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
@@ -10,6 +12,18 @@ from .database import init_db
 from .routers import datasets, documents, tasks, query, units, health, demo, graph
 from .routers import dependencies
 from . import config
+
+# Logging configuration: timestamp + level + logger name + message
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s.%(msecs)03d | %(levelname)-5s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+# Enable debug-level sub-timing from query router with: LOG_LEVEL=DEBUG
+_log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.getLogger("rag").setLevel(getattr(logging, _log_level, logging.INFO))
+
+logger = logging.getLogger("rag.main")
 
 # Initialize database
 init_db()
@@ -30,6 +44,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Access log middleware: logs method, path, status, and elapsed time for every request
+_access_logger = logging.getLogger("rag.access")
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    elapsed = time.perf_counter() - t0
+    client = request.client.host if request.client else "-"
+    _access_logger.info(
+        "%s %s %d %.3fs %s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed,
+        client,
+    )
+    return response
 
 # Mount static files for distributed worker access
 from .config import UPLOAD_DIR
@@ -123,11 +156,16 @@ if __name__ == "__main__":
         sys.exit(1)
 
     # Note: For /query/web demo endpoint, use --timeout-keep-alive 180 to allow slow LLM pipeline
+    # workers=4: each process handles ~8 concurrent requests at current latency,
+    # combined capacity covers 30 concurrent with headroom.
+    # On Linux/production: replace with gunicorn:
+    #   gunicorn app.main:app -k uvicorn.workers.UvicornWorker -w 4 --timeout 180 -b 0.0.0.0:8000
     uvicorn.run(
         "app.main:app",  # Module path (run from rag-service/ directory)
         host=API_HOST,
         port=API_PORT,
-        # reload=True,  # Enable auto-reload for development
+        workers=4,
         timeout_keep_alive=180,  # 3 minutes for slow /query/web endpoint
-        timeout_graceful_shutdown=5  # Only wait 5 seconds for graceful shutdown
+        timeout_graceful_shutdown=5,  # Only wait 5 seconds for graceful shutdown
+        access_log=False,  # Disabled: replaced by rag.access middleware with latency info
     )
