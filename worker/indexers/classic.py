@@ -90,7 +90,7 @@ async def index_classic(
     await report_progress(15)
     
     doc = await processor.read_document(
-        pdf_path=file_path,
+        file_path=file_path,
         max_pages_per_part=MAX_PAGES_PER_PART,
         reader_name=reader_name
     )

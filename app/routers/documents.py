@@ -1062,7 +1062,7 @@ async def locate_pages(
     from collections import defaultdict
     from concurrent.futures import ThreadPoolExecutor
     
-    from zag.schemas.pdf import PDF
+    from zag.schemas.document import PageableDocument
     from zag.utils.page_inference import fuzzy_find_start
     
     # Cache directory for PDF parsing results
@@ -1073,7 +1073,7 @@ async def locate_pages(
     for item in request.items:
         doc_groups[item.doc_id].append(item)
     
-    def find_pages_for_text(pdf: PDF, text_start: str, text_end: str = None) -> tuple[list[int] | None, bool]:
+    def find_pages_for_text(doc: PageableDocument, text_start: str, text_end: str = None) -> tuple[list[int] | None, bool]:
         """
         Find page numbers for a text snippet.
         
@@ -1082,14 +1082,14 @@ async def locate_pages(
         """
         # Find start position
         # Search entire document (no range limit for correctness)
-        start_pos = fuzzy_find_start(text_start, pdf.content, start_from=0, threshold=0.80)
+        start_pos = fuzzy_find_start(text_start, doc.content, start_from=0, threshold=0.80)
         
         if start_pos is None:
             return None, False
         
         # Determine end position
         if text_end:
-            end_pos = fuzzy_find_start(text_end, pdf.content, start_from=start_pos + len(text_start), threshold=0.80, max_search_range=100000)
+            end_pos = fuzzy_find_start(text_end, doc.content, start_from=start_pos + len(text_start), threshold=0.80, max_search_range=100000)
             if end_pos is None:
                 # Fallback: estimate length from text_start
                 end_pos = start_pos + len(text_start)
@@ -1102,7 +1102,7 @@ async def locate_pages(
         page_positions = []
         current_pos = 0
         
-        for page in pdf.pages:
+        for page in doc.pages:
             page_content = page.content or ""
             if not page_content.strip():
                 page_positions.append((current_pos, current_pos, page.page_number))
@@ -1110,7 +1110,7 @@ async def locate_pages(
             
             # Find page in full content
             page_sig = page_content[:50] if len(page_content) > 50 else page_content
-            pos = pdf.content.find(page_sig, current_pos)
+            pos = doc.content.find(page_sig, current_pos)
             
             if pos != -1:
                 page_positions.append((pos, pos + len(page_content), page.page_number))
@@ -1127,11 +1127,22 @@ async def locate_pages(
         
         return sorted(overlapping) if overlapping else None, True
     
-    def find_pages_in_pdf(pdf_path: str, text_start: str, text_end: str = None) -> tuple[list[int] | None, bool]:
+    def find_pages_in_document(file_path: str, text_start: str, text_end: str = None) -> tuple[list[int] | None, bool]:
         """
-        Search directly in the PDF file for accurate page numbers.
-        Uses PyMuPDF (fitz) for fast text extraction with early termination.
+        Search directly in the document file for accurate page numbers.
+        Only PDF files are searched via fitz; all other formats fall back to the
+        archive cache (handled by the caller).
         """
+        ext = Path(file_path).suffix.lower()
+        if ext != '.pdf':
+            # Non-PDF (DOCX, DOC, MD, TXT, etc.): fitz cannot open these formats.
+            # Page location still works for these files via the archive-cache path:
+            # DoclingReader / MarkItDownReader writes a PageableDocument with real
+            # page structure (or a synthetic single page) into ARCHIVES_DIR when
+            # the document is first processed.  The caller will load that cache
+            # and call find_pages_for_text(), which works on any PageableDocument.
+            return None, False
+
         import fitz
         from zag.utils.page_inference import normalize_text
 
@@ -1145,7 +1156,7 @@ async def locate_pages(
         end_pos = None
         search_from = 0  # incremental search, avoid re-scanning old pages
 
-        doc = fitz.open(pdf_path)
+        doc = fitz.open(file_path)
         try:
             for page in doc:
                 page_num = page.number + 1
@@ -1198,28 +1209,33 @@ async def locate_pages(
         ]
         return sorted(overlapping) if overlapping else None, True
 
-    def get_pdf_path_for_doc(doc_id: str) -> str | None:
+    def get_file_path_for_doc(doc_id: str) -> str | None:
         """
-        Return a local path to the original PDF for the given doc_id.
+        Return a local path to the original document for the given doc_id.
 
         Lookup order:
-        1. PDF_FILES_DIR/{doc_id}*.pdf  – pick the newest by mtime (allows
-           supplementary versions like {doc_id}-text.pdf to shadow the original)
+        1. PDF_FILES_DIR/{doc_id}*.<known-ext>  – pick the newest by mtime
         2. DB file_path: local path (absolute or relative to rag-service dir)
-        3. S3 download → saved to PDF_FILES_DIR/{doc_id}.pdf for next time
+        3. S3 download → saved to PDF_FILES_DIR/{doc_id}{original_ext} for next time
 
         Never raises – returns None on any failure so callers can fallback safely.
         """
+        _DOC_EXTENSIONS = {
+            '.pdf', '.docx', '.doc', '.md', '.txt', '.markdown',
+            '.pptx', '.ppt', '.xlsx', '.xls',
+        }
         try:
             from ..utils.s3 import download_file_from_s3
 
             pdf_files_dir = Path(config.PDF_FILES_DIR)
 
-            # 1. Find all local variants matching {doc_id}*.pdf, pick newest by mtime
-            local_pdf = pdf_files_dir / f"{doc_id}.pdf"  # default target for S3 download
+            # 1. Find all local variants matching {doc_id}*, pick newest by mtime
             if pdf_files_dir.exists():
                 candidates = sorted(
-                    pdf_files_dir.glob(f"{doc_id}*.pdf"),
+                    [
+                        p for p in pdf_files_dir.glob(f"{doc_id}*")
+                        if p.suffix.lower() in _DOC_EXTENSIONS
+                    ],
                     key=lambda p: p.stat().st_mtime,
                     reverse=True,
                 )
@@ -1238,10 +1254,12 @@ async def locate_pages(
                 conn.close()
 
             if file_path.startswith("s3://"):
-                # 3. Download from S3 and cache locally
+                # 3. Download from S3, preserve original extension from S3 path
                 pdf_files_dir.mkdir(parents=True, exist_ok=True)
-                ok = download_file_from_s3(file_path, local_pdf)
-                return str(local_pdf) if ok else None
+                s3_ext = Path(file_path).suffix or '.pdf'
+                local_file = pdf_files_dir / f"{doc_id}{s3_ext}"
+                ok = download_file_from_s3(file_path, local_file)
+                return str(local_file) if ok else None
             else:
                 # Local path: try as-is first, then relative to rag-service dir
                 p = Path(file_path)
@@ -1258,34 +1276,34 @@ async def locate_pages(
         try:
             results = []
 
-            # Try to get the actual PDF for accurate page lookup
-            pdf_path = get_pdf_path_for_doc(doc_id)  # always returns None on failure
+            # Try to get the actual document file for accurate page lookup
+            file_path = get_file_path_for_doc(doc_id)  # always returns None on failure
 
-            # Preload MinerU cache only if needed
+            # Preload archive cache only if needed
             doc_cache_dir = cache_dir / doc_id
-            pdf = None
+            doc = None
 
             # Process all items for this doc
             for item in items:
                 try:
                     page_numbers, found = None, False
 
-                    # Primary: direct PDF search
-                    if pdf_path:
-                        page_numbers, found = find_pages_in_pdf(
-                            pdf_path, item.text_start, item.text_end
+                    # Primary: direct file search (PDF only; non-PDF returns False)
+                    if file_path:
+                        page_numbers, found = find_pages_in_document(
+                            file_path, item.text_start, item.text_end
                         )
 
-                    # Fallback: MinerU cache
+                    # Fallback: archive cache
                     if not found and doc_cache_dir.exists():
-                        if pdf is None:
+                        if doc is None:
                             try:
-                                pdf = PDF.load(doc_cache_dir)
+                                doc = PageableDocument.load(doc_cache_dir)
                             except Exception:
-                                pdf = None
-                        if pdf is not None:
+                                doc = None
+                        if doc is not None:
                             page_numbers, found = find_pages_for_text(
-                                pdf, item.text_start, item.text_end
+                                doc, item.text_start, item.text_end
                             )
 
                     # Last resort: return page 1 rather than leaving caller empty

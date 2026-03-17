@@ -70,8 +70,13 @@ if __name__ == "__main__":
         print("=" * 60)
         print(f"\n[Database]")
         print(f"  DATABASE_PATH: {os.path.abspath(config.DATABASE_PATH)}")
-        print(f"\n[PDF Cache]")
-        print(f"  ARCHIVES_DIR: {os.path.abspath(config.ARCHIVES_DIR)}")
+        print(f"\n[Cache]")
+        _archives_dir = os.path.abspath(config.ARCHIVES_DIR)
+        _pdf_dir = os.path.abspath(config.PDF_FILES_DIR)
+        _archives_count = len(os.listdir(_archives_dir)) if os.path.isdir(_archives_dir) else 0
+        _pdf_count = len(os.listdir(_pdf_dir)) if os.path.isdir(_pdf_dir) else 0
+        print(f"  ARCHIVES_DIR: {_archives_dir} ({_archives_count})")
+        print(f"  PDF_FILES_DIR: {_pdf_dir} ({_pdf_count})")
         print(f"\n[Vector Store]")
         print(f"  VECTOR_STORE_TYPE: {config.VECTOR_STORE_TYPE}")
         print(f"  VECTOR_STORE_HOST: {config.VECTOR_STORE_HOST}")
@@ -92,9 +97,6 @@ if __name__ == "__main__":
         print(f"\n[API Server]")
         print(f"  API_HOST: {API_HOST}")
         print(f"  API_PORT: {API_PORT}")
-        print(f"\n[File Storage]")
-        print(f"  UPLOAD_DIR: {os.path.abspath(config.UPLOAD_DIR)}")
-        print(f"  STORAGE_TYPE: {config.STORAGE_TYPE}")
         print("=" * 60)
 
     def confirm_config() -> bool:

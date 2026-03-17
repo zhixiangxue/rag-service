@@ -44,6 +44,7 @@ from zag.storages.vector import QdrantVectorStore
 from zag.indexers import VectorIndexer, FullTextIndexer
 from zag.schemas import DocumentMetadata, Page, UnitType
 from zag.schemas.pdf import PDF
+from zag.schemas.document import PageableDocument
 from zag.schemas.unit import TextUnit, TableUnit
 from zag.utils.hash import calculate_file_hash
 
@@ -90,8 +91,7 @@ class PagePart(BaseModel):
     start_page: int  # 1-based inclusive
     end_page: int    # 1-based inclusive
     completed: bool = False
-    # The processed document for this part (with heading correction)
-    part_doc: Optional[PDF] = None
+    part_doc: Optional[PDF] = None  # processed document for this part
 
     def __repr__(self):
         status = "✓" if self.completed else "○"
@@ -116,8 +116,8 @@ class ClassicDocumentProcessor:
         self.output_root.mkdir(parents=True, exist_ok=True)
 
         # State variables (populated by methods)
-        self.pdf_path: Optional[Path] = None  # Current PDF being processed
-        self.document: Optional[PDF] = None
+        self.file_path: Optional[Path] = None  # Current file being processed
+        self.document: Optional[PageableDocument] = None
         self.units: List[Union[TextUnit, TableUnit]] = []
 
         # Page range being processed (for large file processing)
@@ -156,7 +156,10 @@ class ClassicDocumentProcessor:
                 processor = cls(output_root)
 
                 # Copy state from old checkpoint
-                processor.pdf_path = old_processor.pdf_path
+                processor.file_path = getattr(
+                    old_processor, 'file_path',
+                    getattr(old_processor, 'pdf_path', None)
+                )
                 processor.document = old_processor.document
                 processor.units = old_processor.units
                 processor._current_page_range = getattr(
@@ -230,194 +233,192 @@ class ClassicDocumentProcessor:
 
     # ========== Document Processing ==========
 
-    @staticmethod
-    def _calculate_page_ranges(total_pages: int, pages_per_part: int) -> List[PagePart]:
-        """
-        Calculate page ranges for large file processing
-
-        Args:
-            total_pages: Total number of pages in the PDF
-            pages_per_part: Maximum pages per part
-
-        Returns:
-            List of PagePart objects
-
-        Example:
-            >>> _calculate_page_ranges(250, 100)
-            [PagePart(1-100) ○, PagePart(101-200) ○, PagePart(201-250) ○]
-        """
-        parts = []
-        start = 1
-        while start <= total_pages:
-            end = min(start + pages_per_part - 1, total_pages)
-            parts.append(PagePart(start_page=start, end_page=end))
-            start = end + 1
-        return parts
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_fixed(10),
-        retry=retry_if_exception_type((TimeoutError, Exception)),
-        reraise=True
-    )
-    async def _read_single_part(
-        self,
-        pdf_path: Path,
-        page_range: Optional[tuple] = None,
-        reader_name: str = ReaderType.DEFAULT
-    ) -> PDF:
-        """
-        Read a single PDF part with chosen reader + optional HeadingCorrection.
-
-        Args:
-            pdf_path: Path to PDF file
-            page_range: Optional page range tuple (start, end) 1-based inclusive
-            reader_name: Reader to use - 'mineru' (default) or 'claude'
-
-        Returns:
-            PDF document object
-
-        Note:
-            - Automatically retries up to 3 times on TimeoutError
-            - Waits 10 seconds between retries
-            - HeadingCorrector is skipped for 'claude' reader (already clean output)
-        """
-        range_str = f" (pages {page_range[0]}-{page_range[1]})" if page_range else ""
-
-        if reader_name == "claude":
-            # Use Claude Vision reader - no HeadingCorrector needed
-            from zag.readers import ClaudeVisionReader
-            from ..config import ANTHROPIC_API_KEY
-            console.print(f"[yellow]📸 Claude Vision: {pdf_path.name}{range_str}[/yellow]")
-            reader = ClaudeVisionReader(api_key=ANTHROPIC_API_KEY)
-            doc = reader.read(str(pdf_path), page_range=page_range)
-        else:
-            # Use MinerU reader (default) + HeadingCorrector
-            console.print(f"📄 Parsing PDF with MinerU{range_str}: {pdf_path.name}")
-            from zag.readers import MinerUReader
-            reader = MinerUReader()
-            doc = reader.read(str(pdf_path), page_range=page_range)
-
-            # Apply heading correction
-            console.print("  🔧 Correcting headings...")
-            corrector = HeadingCorrector(
-                llm_uri=f"{LLM_PROVIDER}/{LLM_MODEL}",
-                api_key=LLM_API_KEY,
-                llm_correction=True
-            )
-            doc = await corrector.acorrect_document(doc)
-            console.print("  ✅ Headings corrected")
-
-        console.print(f"  ✅ Parsed {len(doc.content):,} characters")
-        console.print(f"  ✅ Pages: {len(doc.pages)}")
-        if doc.metadata and doc.metadata.custom:
-            console.print(
-                f"  ✅ Text items: {doc.metadata.custom.get('text_items_count', 0)}")
-            console.print(
-                f"  ✅ Table items: {doc.metadata.custom.get('table_items_count', 0)}")
-
-        return doc
-
     async def read_document(
         self,
-        pdf_path: Path,
+        file_path: Path,
         max_pages_per_part: int = 100,
-        reader_name: str = ReaderType.DEFAULT
-    ) -> PDF:
+        reader_name: str = ReaderType.DEFAULT,
+    ) -> PageableDocument:
         """
-        Read PDF document with automatic chunking for large files.
+        Route to the format-specific reader, then cache the result.
 
-        Automatically splits large files into parts, reads each part with retry,
-        applies heading correction (MinerU only), and merges. Supports checkpoint
-        recovery at part level for maximum resilience.
-
-        Args:
-            pdf_path: Path to PDF file
-            max_pages_per_part: Maximum pages per part (default: 100)
-                               Files with more pages will be split automatically
-            reader_name: Reader to use - 'mineru' (default) or 'claude'
-
-        Returns:
-            PDF document object
+        - .pdf           → _read_pdf  (chunked, part-level checkpoint, HeadingCorrector)
+        - .docx / .doc   → _read_word (single pass, DoclingReader, real page structure)
+        - .md / .txt     → _read_plain (single pass, MarkItDownReader, synthetic page)
         """
-        self.pdf_path = Path(pdf_path)
-        if not self.pdf_path.exists():
-            raise FileNotFoundError(f"PDF file not found: {self.pdf_path}")
+        self.file_path = Path(file_path)
+        if not self.file_path.exists():
+            raise FileNotFoundError(f"File not found: {self.file_path}")
 
-        # Get total pages
-        from pypdf import PdfReader
-        reader = PdfReader(str(self.pdf_path))
-        total_pages = len(reader.pages)
-        console.print(f"📖 Total pages: {total_pages}")
+        ext = self.file_path.suffix.lower()
+        if ext == '.pdf':
+            await self._read_pdf(max_pages_per_part, reader_name)
+        elif ext in ('.docx', '.doc'):
+            await self._read_word()
+        elif ext in ('.md', '.txt', '.markdown'):
+            await self._read_plain()
+        else:
+            raise ValueError(
+                f"Unsupported file format: {ext}. "
+                f"Supported: .pdf, .docx, .doc, .md, .txt"
+            )
 
-        # Initialize parts if not already exist (first run)
+        self._save_checkpoint()
+
+        # Cache to ARCHIVES_DIR for reuse (best effort, failure is acceptable)
+        try:
+            console.print("\nCaching document...")
+            archive_path = self.document.dump(ARCHIVES_DIR)
+            console.print(f"   Cached: {archive_path}")
+        except Exception as e:
+            console.print(f"   Cache failed (non-critical): {e}", style="yellow")
+
+        return self.document
+
+    async def _read_pdf(self, max_pages_per_part: int, reader_name: str) -> None:
+        """
+        Read a PDF with page-range chunking and part-level checkpoint recovery.
+
+        All PDF-specific helpers are nested here so they don't pollute the class
+        interface:
+        - _calc_parts: split total_pages into PagePart slices
+        - _read_part:  read one slice with automatic retry + optional HeadingCorrector
+        """
+
+        def _calc_parts(total_pages: int, pages_per_part: int) -> List[PagePart]:
+            """Divide total_pages into consecutive PagePart slices."""
+            parts: List[PagePart] = []
+            start = 1
+            while start <= total_pages:
+                end = min(start + pages_per_part - 1, total_pages)
+                parts.append(PagePart(start_page=start, end_page=end))
+                start = end + 1
+            return parts
+
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_fixed(10),
+            retry=retry_if_exception_type((TimeoutError, Exception)),
+            reraise=True,
+        )
+        async def _read_part(page_range: Optional[tuple] = None) -> PDF:
+            """Read one page-range slice; retries up to 3x on failure."""
+            range_str = (
+                f" (pages {page_range[0]}-{page_range[1]})" if page_range else ""
+            )
+            if reader_name == "claude":
+                from zag.readers import ClaudeVisionReader
+                from ..config import ANTHROPIC_API_KEY
+
+                console.print(
+                    f"[yellow]Claude Vision: {self.file_path.name}{range_str}[/yellow]"
+                )
+                reader = ClaudeVisionReader(api_key=ANTHROPIC_API_KEY)
+                doc = reader.read(str(self.file_path), page_range=page_range)
+            else:
+                console.print(
+                    f"Parsing PDF with MinerU{range_str}: {self.file_path.name}"
+                )
+                from zag.readers import MinerUReader
+
+                reader = MinerUReader()
+                doc = reader.read(str(self.file_path), page_range=page_range)
+                console.print("  Correcting headings...")
+                corrector = HeadingCorrector(
+                    llm_uri=f"{LLM_PROVIDER}/{LLM_MODEL}",
+                    api_key=LLM_API_KEY,
+                    llm_correction=True,
+                )
+                doc = await corrector.acorrect_document(doc)
+                console.print("  Headings corrected")
+
+            console.print(
+                f"  Parsed {len(doc.content):,} chars, {len(doc.pages)} pages"
+            )
+            if doc.metadata and doc.metadata.custom:
+                console.print(
+                    f"  Text items: {doc.metadata.custom.get('text_items_count', 0)}, "
+                    f"Table items: {doc.metadata.custom.get('table_items_count', 0)}"
+                )
+            return doc
+
+        # ---- main PDF flow ----
+        from pypdf import PdfReader as _PdfReader
+
+        total_pages = len(_PdfReader(str(self.file_path)).pages)
+        console.print(f"Total pages: {total_pages}")
+
         if not self._parts:
-            self._parts = self._calculate_page_ranges(
-                total_pages, max_pages_per_part)
+            self._parts = _calc_parts(total_pages, max_pages_per_part)
 
-        console.print(f"✂️  Will read in {len(self._parts)} parts:")
+        console.print(f"Will read in {len(self._parts)} parts:")
         for i, part in enumerate(self._parts):
             console.print(f"     {i}: {part}")
 
-        # Process each part (skip already completed ones)
         for part in self._parts:
             if part.completed:
                 console.print(
-                    f"[dim]⏭️  Part {part.start_page}-{part.end_page} already completed, skipping[/dim]")
+                    f"[dim]Part {part.start_page}-{part.end_page} "
+                    f"already completed, skipping[/dim]"
+                )
                 continue
-
             console.print(
-                f"\n[cyan]--- Reading part {part.start_page}-{part.end_page} ---[/cyan]")
-            part_doc = await self._read_single_part(
-                self.pdf_path,
-                (part.start_page, part.end_page),
-                reader_name=reader_name
+                f"\n[cyan]--- Reading part {part.start_page}-{part.end_page} ---[/cyan]"
             )
-
-            # Store the processed part document
+            part.part_doc = await _read_part(
+                page_range=(part.start_page, part.end_page)
+            )
             part.completed = True
-            part.part_doc = part_doc
             self._save_checkpoint()
 
-        # All parts processed, now merge them
-        console.print(
-            f"\n[cyan]🔗 Merging all {len(self._parts)} parts...[/cyan]")
+        console.print(f"\n[cyan]Merging {len(self._parts)} parts...[/cyan]")
         merged_doc = None
         for part in self._parts:
             if part.part_doc is None:
                 raise RuntimeError(
-                    f"Part {part.start_page}-{part.end_page} has no document!")
-
-            if merged_doc is None:
-                merged_doc = part.part_doc
-            else:
-                merged_doc = merged_doc + part.part_doc
+                    f"Part {part.start_page}-{part.end_page} has no document!"
+                )
+            merged_doc = (
+                part.part_doc if merged_doc is None else merged_doc + part.part_doc
+            )
             console.print(
-                f"  ✅ Merged part {part.start_page}-{part.end_page}: {len(merged_doc.pages)} pages total")
+                f"  Merged {part.start_page}-{part.end_page}: "
+                f"{len(merged_doc.pages)} pages total"
+            )
 
-        # All parts done
         console.print(
-            f"\n[bold green]✅ All {len(self._parts)} parts completed and merged![/bold green]")
-        console.print(
-            f"   Final document: {len(merged_doc.pages)} pages, {len(merged_doc.content):,} characters")
-
+            f"\n[bold green]All {len(self._parts)} parts merged: "
+            f"{len(merged_doc.pages)} pages, {len(merged_doc.content):,} chars[/bold green]"
+        )
         self.document = merged_doc
-        self._parts = []  # Clear parts (no longer needed)
-        self._save_checkpoint()
+        self._parts = []
 
-        # Dump to cache for reuse (best effort, failure is acceptable)
-        try:
-            console.print(f"\n💾 Caching document...")
-            # Use global ARCHIVES_DIR for consistency with LOD mode
-            archive_path = self.document.dump(ARCHIVES_DIR)
-            console.print(f"   ✅ Cached: {archive_path}")
-        except Exception as e:
-            console.print(
-                f"   ⚠️  Cache failed (non-critical): {e}", style="yellow")
+    async def _read_word(self) -> None:
+        """Read DOCX / DOC with DoclingReader (preserves real page structure)."""
+        console.print(
+            f"Parsing Word document with DoclingReader: {self.file_path.name}"
+        )
+        from zag.readers.docling import DoclingReader
 
-        return self.document
+        reader = DoclingReader()
+        self.document = reader.read(str(self.file_path))
+        console.print(
+            f"  Parsed {len(self.document.content):,} chars, "
+            f"{len(self.document.pages)} pages"
+        )
 
-    def set_document(self, document: PDF) -> None:
+    async def _read_plain(self) -> None:
+        """Read MD / TXT with MarkItDownReader (single synthetic page)."""
+        console.print(
+            f"Parsing plain text with MarkItDownReader: {self.file_path.name}"
+        )
+        from zag.readers.markitdown import MarkItDownReader
+
+        reader = MarkItDownReader()
+        self.document = reader.read(str(self.file_path))
+        console.print(f"  Parsed {len(self.document.content):,} chars")
+
+    def set_document(self, document: PageableDocument) -> None:
         """
         Set the document directly (for merged documents)
 
@@ -428,7 +429,7 @@ class ClassicDocumentProcessor:
         """
         self.document = document
         # Use source field for file path (source contains the file path for local files)
-        self.pdf_path = Path(
+        self.file_path = Path(
             document.metadata.source) if document.metadata.source else None
 
     def set_business_context(
