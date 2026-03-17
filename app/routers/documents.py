@@ -703,6 +703,7 @@ def list_document_tasks(dataset_id: str, doc_id: str):
 def list_documents(
     dataset_id: str,
     status: Optional[str] = None,
+    limit: Optional[int] = None,
 ):
     """List documents in a dataset."""
     conn = get_connection()
@@ -727,6 +728,8 @@ def list_documents(
         )
     
     rows = cursor.fetchall()
+    if limit is not None:
+        rows = rows[:limit]
     conn.close()
 
     # Pre-compute base_dir_str once for all file_url builds (pure string, no I/O per row)

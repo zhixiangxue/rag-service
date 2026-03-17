@@ -463,11 +463,11 @@ async def resolve_lod_ids(
         return {"unit_id": request.unit_id, "doc_id": units[0].doc_id}
 
     if request.doc_id and not request.unit_id:
-        # Case 2: doc_id only - targeted fetch, O(1)
+        # Case 2: doc_id only - targeted fetch, O(1); only need the first LOD unit
         units = await vector_store.afetch({
             "doc_id": request.doc_id,
             "metadata.custom.mode": ProcessingMode.LOD
-        })
+        }, limit=1)
         if not units:
             raise ValueError(f"No LOD unit found for doc_id: {request.doc_id}")
         return {"unit_id": units[0].unit_id, "doc_id": request.doc_id}
