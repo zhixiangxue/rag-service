@@ -84,9 +84,13 @@ if ! command -v gunicorn &> /dev/null; then
     exit 1
 fi
 
-# Worker count = number of CPU cores (async IO-bound, no CPU bottleneck)
-# Override with WORKERS env var if set, e.g.: WORKERS=8 ./scripts/start_server.sh
-WORKERS="${WORKERS:-$(nproc)}"
+# Worker count = CPU cores - 2 (reserve for Qdrant/Meilisearch on same machine)
+# Range: 1-4 workers, override with WORKERS env var, e.g.: WORKERS=8 ./scripts/start_server.sh
+CORES=$(nproc)
+DEFAULT_WORKERS=$((CORES - 2))
+[ $DEFAULT_WORKERS -lt 1 ] && DEFAULT_WORKERS=1
+[ $DEFAULT_WORKERS -gt 4 ] && DEFAULT_WORKERS=4
+WORKERS="${WORKERS:-$DEFAULT_WORKERS}"
 
 echo "[3/4] Workers: $WORKERS (cores: $(nproc))"
 
