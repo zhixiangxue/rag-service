@@ -72,4 +72,22 @@ if ($venvPath) {
 # Run as module from rag-service directory
 Write-Host "[3/3] Starting server (python -m app.main)..." -ForegroundColor Green
 Write-Host "`n========================================`n" -ForegroundColor Cyan
-python -m app.main
+
+$proc = Start-Process -FilePath "python" `
+    -ArgumentList "-m", "app.main" `
+    -NoNewWindow `
+    -PassThru
+
+Write-Host "PID: $($proc.Id)  |  Ctrl+C to stop" -ForegroundColor DarkGray
+
+try {
+    while (-not $proc.HasExited) {
+        Start-Sleep -Milliseconds 300
+    }
+} finally {
+    if (-not $proc.HasExited) {
+        Write-Host "`nShutting down (PID $($proc.Id))..." -ForegroundColor Yellow
+        taskkill /T /F /PID $proc.Id 2>&1 | Out-Null
+        Write-Host "Server stopped." -ForegroundColor Green
+    }
+}
