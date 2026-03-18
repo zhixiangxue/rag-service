@@ -28,11 +28,12 @@ _cache_lock = threading.RLock()
 
 # Singletons: embedder and reranker are config-driven and shared across all requests.
 # vector_store and fulltext_retriever depend on collection_name so they are keyed by collection.
+# No lock needed: worst case is two threads both init and one overwrites the other —
+# all these objects are stateless connection clients, double-init is harmless.
 _embedder: Optional[Any] = None
 _reranker: Optional[Any] = None
 _vector_store_cache: Dict[str, Any] = {}
 _fulltext_retriever_cache: Dict[str, Any] = {}
-_singleton_lock = threading.Lock()
 
 # Limits concurrent Cohere rerank calls to prevent burst 429 / connection failures.
 # Created lazily inside the event loop (asyncio.Semaphore must run in a loop context).
@@ -44,9 +45,7 @@ def _get_embedder() -> Any:
     """Return a cached Embedder singleton (created once, reused for all requests)."""
     global _embedder
     if _embedder is None:
-        with _singleton_lock:
-            if _embedder is None:
-                _embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
+        _embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
     return _embedder
 
 
@@ -55,24 +54,17 @@ def _get_vector_store(collection_name: str) -> Any:
 
     gRPC channel setup to a remote host takes ~2-7s; caching the client
     eliminates that overhead on every query request.
-
-    Note: _get_embedder() is called outside the lock to avoid deadlock —
-    _get_embedder() also acquires _singleton_lock, and threading.Lock is
-    non-reentrant.
     """
     if collection_name not in _vector_store_cache:
-        embedder = _get_embedder()  # resolve outside the lock to avoid deadlock
-        with _singleton_lock:
-            if collection_name not in _vector_store_cache:
-                _vector_store_cache[collection_name] = QdrantVectorStore.server(
-                    host=config.VECTOR_STORE_HOST,
-                    port=config.VECTOR_STORE_PORT,
-                    grpc_port=config.VECTOR_STORE_GRPC_PORT,
-                    prefer_grpc=True,
-                    collection_name=collection_name,
-                    embedder=embedder,
-                    timeout=60,
-                )
+        _vector_store_cache[collection_name] = QdrantVectorStore.server(
+            host=config.VECTOR_STORE_HOST,
+            port=config.VECTOR_STORE_PORT,
+            grpc_port=config.VECTOR_STORE_GRPC_PORT,
+            prefer_grpc=True,
+            collection_name=collection_name,
+            embedder=_get_embedder(),
+            timeout=60,
+        )
     return _vector_store_cache[collection_name]
 
 
@@ -83,14 +75,12 @@ def _get_fulltext_retriever(collection_name: str, top_k: int = 10) -> Any:
     synchronous HTTP request.  Caching avoids that blocking call on every query.
     """
     if collection_name not in _fulltext_retriever_cache:
-        with _singleton_lock:
-            if collection_name not in _fulltext_retriever_cache:
-                _fulltext_retriever_cache[collection_name] = FullTextRetriever(
-                    url=config.MEILISEARCH_HOST,
-                    index_name=collection_name,
-                    api_key=config.MEILISEARCH_API_KEY,
-                    top_k=top_k,
-                )
+        _fulltext_retriever_cache[collection_name] = FullTextRetriever(
+            url=config.MEILISEARCH_HOST,
+            index_name=collection_name,
+            api_key=config.MEILISEARCH_API_KEY,
+            top_k=top_k,
+        )
     return _fulltext_retriever_cache[collection_name]
 
 
@@ -98,9 +88,7 @@ def _get_reranker() -> Any:
     """Return a cached Reranker singleton."""
     global _reranker
     if _reranker is None:
-        with _singleton_lock:
-            if _reranker is None:
-                _reranker = Reranker(config.RERANKER_URI, api_key=config.COHERE_API_KEY)
+        _reranker = Reranker(config.RERANKER_URI, api_key=config.COHERE_API_KEY)
     return _reranker
 
 

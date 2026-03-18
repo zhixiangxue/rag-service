@@ -8,8 +8,7 @@ from ..schemas import (
     ApiResponse, MessageResponse
 )
 from .. import config
-from .query import get_dataset_info
-from zag.storages.vector import QdrantVectorStore
+from .query import get_dataset_info, _get_vector_store as _get_cached_vector_store
 
 router = APIRouter(prefix="/datasets", tags=["units"])
 
@@ -28,9 +27,14 @@ async def _list_units_for_doc(dataset_id: str, doc_id: str) -> list[dict]:
 def _get_vector_store(dataset_id: str, with_embedder: bool = False):
     """Get vector store for dataset.
 
+    For normal read/write operations, delegates to the cached singleton in
+    query.py (avoids rebuilding a gRPC connection on every request).
+    When with_embedder=True (re-embedding), a fresh instance with an embedder
+    is created because the cached one has no embedder attached.
+
     Args:
         dataset_id: Dataset ID
-        with_embedder: If True, initialise embedder (required for re-embedding).
+        with_embedder: If True, create a new instance with embedder attached.
 
     Returns:
         Vector store instance
@@ -41,19 +45,22 @@ def _get_vector_store(dataset_id: str, with_embedder: bool = False):
     collection_name, engine = get_dataset_info(dataset_id)
 
     if engine == "qdrant":
-        embedder = None
         if with_embedder:
+            # Needs embedder for re-embedding; create a one-off instance.
+            from zag.storages.vector import QdrantVectorStore
             from zag.embedders import Embedder
             embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
-        return QdrantVectorStore.server(
-            host=config.VECTOR_STORE_HOST,
-            port=config.VECTOR_STORE_PORT,
-            grpc_port=config.VECTOR_STORE_GRPC_PORT,
-            prefer_grpc=True,
-            collection_name=collection_name,
-            embedder=embedder,
-            timeout=60
-        )
+            return QdrantVectorStore.server(
+                host=config.VECTOR_STORE_HOST,
+                port=config.VECTOR_STORE_PORT,
+                grpc_port=config.VECTOR_STORE_GRPC_PORT,
+                prefer_grpc=True,
+                collection_name=collection_name,
+                embedder=embedder,
+                timeout=60,
+            )
+        # Reuse the process-level cached connection from query.py.
+        return _get_cached_vector_store(collection_name)
     else:
         raise HTTPException(
             status_code=501,

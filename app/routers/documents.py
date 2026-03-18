@@ -760,27 +760,38 @@ def list_documents(
 
 
 @router.get("/{doc_id}", response_model=ApiResponse[DocumentResponse])
-def get_document(dataset_id: str, doc_id: str):
+async def get_document(dataset_id: str, doc_id: str):
     """Get document by ID."""
     conn = get_connection()
     cursor = conn.cursor()
-    
     cursor.execute(
         "SELECT * FROM documents WHERE id = ? AND dataset_id = ?",
         (doc_id, dataset_id)
     )
     row = cursor.fetchone()
     conn.close()
-    
+
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
-    
+
     # Parse document metadata
     doc_metadata = json.loads(row["metadata"]) if "metadata" in row.keys() and row["metadata"] else None
-    
+
     # Build file_url for the worker to fetch the file
     file_url = _build_file_url(row["file_path"])
-    
+
+    # Real-time unit count from Qdrant (best-effort).
+    vector_unit_count = None
+    try:
+        from .query import get_dataset_info, _get_vector_store
+        collection_name, engine = get_dataset_info(dataset_id)
+        if engine == "qdrant":
+            vector_store = _get_vector_store(collection_name)
+            vector_unit_count = await vector_store.acount({"doc_id": doc_id})
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("acount failed: %s", e, exc_info=True)
+
     data = DocumentResponse(
         doc_id=str(row["id"]),
         dataset_id=str(row["dataset_id"]),
@@ -794,11 +805,11 @@ def get_document(dataset_id: str, doc_id: str):
         metadata=doc_metadata,
         status=row["status"],
         task_id=str(row["task_id"]) if row["task_id"] else None,
-        unit_count=row["unit_count"],
+        unit_count=vector_unit_count,
         created_at=row["created_at"],
         updated_at=row["updated_at"]
     )
-    
+
     return ApiResponse(success=True, code=200, data=data)
 
 
