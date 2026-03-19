@@ -1,7 +1,8 @@
 """Document API endpoints."""
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Body
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Body, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from typing import List, Optional, Dict, Any
+import asyncio
 import os
 import json
 import sqlite3
@@ -236,6 +237,53 @@ def _cache_pdf_to_files_dir(src_path: str, doc_id: str) -> None:
         print(f"[WARN] Failed to cache PDF to PDF_FILES_DIR for doc_id {doc_id}: {e}")
 
 
+def _detect_scanned_pdf(file_path: str) -> tuple[bool, str]:
+    """Detect whether a PDF is a scanned (image-only) document.
+
+    Samples up to 10 pages spread evenly across the document and measures
+    average extractable text per page. A scanned PDF has negligible selectable
+    text; the threshold is 100 characters/page on average.
+
+    Args:
+        file_path: Local path to the PDF file.
+
+    Returns:
+        (is_scanned, reason) tuple. is_scanned=True when the PDF is image-only.
+    """
+    if not file_path.lower().endswith(".pdf"):
+        return False, ""
+    if not Path(file_path).exists():
+        return True, f"Rejected: File not found — {file_path}"
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(file_path)
+        total_pages = len(doc)
+        if total_pages == 0:
+            doc.close()
+            return True, "Rejected: PDF file has 0 pages and cannot be processed."
+        # Sample up to 10 pages spread across the document
+        sample_size = min(10, total_pages)
+        step = max(1, total_pages // sample_size)
+        indices = [i * step for i in range(sample_size) if i * step < total_pages]
+        total_chars = sum(len(doc[i].get_text().strip()) for i in indices)
+        doc.close()
+        avg_chars = total_chars / len(indices)
+        if avg_chars < 100:
+            return True, (
+                f"Rejected: PDF appears to be a scanned document (image-only). "
+                f"Average extractable text is {avg_chars:.0f} characters/page "
+                f"across {len(indices)} sampled pages (threshold: 100). "
+                f"Text extraction cannot process scanned PDFs — "
+                f"please provide a text-based PDF instead."
+            )
+        return False, ""
+    except Exception as e:
+        return True, f"Rejected: Failed to parse PDF file — {e}. The file may be corrupted or in an unsupported format."
+
+
+# NOTE: This endpoint is intentionally offline — no @router.post decorator.
+# Local file upload via multipart form has been disabled.
+# Use POST /from-s3 to register documents via S3 URL instead.
 async def upload_file(
     dataset_id: str,
     file: UploadFile = File(...),
@@ -257,6 +305,11 @@ async def upload_file(
     # Save file using storage abstraction
     storage = get_storage()
     file_path = storage.save(file.file, file.filename, dataset_id)
+
+    # Reject scanned (image-only) PDFs before creating any record
+    is_scanned, reason = _detect_scanned_pdf(file_path)
+    if is_scanned:
+        raise HTTPException(status_code=422, detail=reason)
 
     # Create document record (handles dataset validation, hash, duplicate check, insert)
     try:
@@ -327,6 +380,12 @@ async def upload_from_s3(
     except Exception as e:
         temp_file.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Failed to download file from S3: {str(e)}")
+
+    # Reject scanned (image-only) PDFs before creating any record
+    is_scanned, reason = _detect_scanned_pdf(str(temp_file))
+    if is_scanned:
+        temp_file.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=reason)
 
     # Create document record using temp file for hash/size, but store s3_url as file_path
     result = None
@@ -760,7 +819,11 @@ def list_documents(
 
 
 @router.get("/{doc_id}", response_model=ApiResponse[DocumentResponse])
-async def get_document(dataset_id: str, doc_id: str):
+async def get_document(
+    dataset_id: str,
+    doc_id: str,
+    realtime_count: bool = Query(False, description="Fetch live unit count from vector DB instead of cached DB value"),
+):
     """Get document by ID."""
     conn = get_connection()
     cursor = conn.cursor()
@@ -780,17 +843,33 @@ async def get_document(dataset_id: str, doc_id: str):
     # Build file_url for the worker to fetch the file
     file_url = _build_file_url(row["file_path"])
 
-    # Real-time unit count from Qdrant (best-effort).
-    vector_unit_count = None
-    try:
-        from .query import get_dataset_info, _get_vector_store
-        collection_name, engine = get_dataset_info(dataset_id)
-        if engine == "qdrant":
-            vector_store = _get_vector_store(collection_name)
-            vector_unit_count = await vector_store.acount({"doc_id": doc_id})
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning("acount failed: %s", e, exc_info=True)
+    # Unit count: use cached DB value by default; only hit Qdrant when explicitly requested.
+    # Calling acount on every GET is risky: a broken gRPC/HTTP connection will hang
+    # the request until timeout and pollute all callers sharing the singleton cache.
+    unit_count = row["unit_count"] if "unit_count" in row.keys() else None
+    if realtime_count:
+        collection_name = None
+        try:
+            from .query import get_dataset_info, _get_vector_store, _invalidate_vector_store
+            collection_name, engine = get_dataset_info(dataset_id)
+            if engine == "qdrant":
+                vector_store = _get_vector_store(collection_name)
+                unit_count = await asyncio.wait_for(
+                    vector_store.acount({"doc_id": doc_id}),
+                    timeout=10.0,
+                )
+        except asyncio.TimeoutError:
+            if collection_name:
+                _invalidate_vector_store(collection_name)
+            import logging
+            logging.getLogger(__name__).warning(
+                "acount timed out for doc %s, vector store cache evicted", doc_id
+            )
+        except Exception as e:
+            if collection_name:
+                _invalidate_vector_store(collection_name)
+            import logging
+            logging.getLogger(__name__).warning("acount failed: %s", e, exc_info=True)
 
     data = DocumentResponse(
         doc_id=str(row["id"]),
@@ -805,7 +884,7 @@ async def get_document(dataset_id: str, doc_id: str):
         metadata=doc_metadata,
         status=row["status"],
         task_id=str(row["task_id"]) if row["task_id"] else None,
-        unit_count=vector_unit_count,
+        unit_count=unit_count,
         created_at=row["created_at"],
         updated_at=row["updated_at"]
     )
@@ -1205,6 +1284,10 @@ async def locate_pages(
                         if found_end is not None:
                             end_pos = found_end + len(norm_end)
                             break
+                        # If start found and we've searched max_search_range without finding end,
+                        # stop reading more pages to avoid unnecessary I/O
+                        elif len(full_text) - start_pos > 100000 + len(norm_start):
+                            break
                     else:
                         end_pos = start_pos + len(norm_start)
                         break
@@ -1221,7 +1304,11 @@ async def locate_pages(
             pn for ps, pe, pn in page_positions
             if not (end_pos <= ps or start_pos >= pe)
         ]
-        return sorted(overlapping) if overlapping else None, True
+        # If text was found but no pages overlap (page_positions mapping failed),
+        # treat as not-found rather than returning found=True with empty pages.
+        if not overlapping:
+            return [], False
+        return sorted(overlapping), True
 
     def get_file_path_for_doc(doc_id: str) -> str | None:
         """
@@ -1285,80 +1372,99 @@ async def locate_pages(
         except Exception:
             return None
 
-    def process_single_doc(doc_id: str, items: list) -> list[LocatePageResult]:
-        """Process all items for a single document. Never raises."""
+    def process_single_item(
+        item,
+        doc_id: str,
+        file_path: str | None,
+    ) -> LocatePageResult:
+        """
+        Process a single item for page location.
+        Searches the original document file only. Returns found=False / page_numbers=[]
+        when the text cannot be located — callers decide how to handle a miss.
+        """
         try:
-            results = []
+            page_numbers, found = None, False
 
+            # Primary: direct file search (PDF only; non-PDF returns False).
+            # No archive-cache fallback: parsed cache page boundaries can be inaccurate,
+            # and a wrong page number is more harmful than an honest not-found result.
+            if file_path:
+                page_numbers, found = find_pages_in_document(
+                    file_path, item.text_start, item.text_end
+                )
+
+            return LocatePageResult(
+                request_id=item.request_id,
+                doc_id=doc_id,
+                page_numbers=page_numbers,
+                found=found,
+                error=None if found else "Text not found in source document",
+            )
+        except Exception as e:
+            return LocatePageResult(
+                request_id=item.request_id,
+                doc_id=doc_id,
+                page_numbers=[],
+                found=False,
+                error=f"Search error: {str(e)}",
+            )
+
+    def process_single_doc(doc_id: str, items: list) -> list[LocatePageResult]:
+        """Process all items for a single document concurrently. Never raises."""
+        try:
             # Try to get the actual document file for accurate page lookup
             file_path = get_file_path_for_doc(doc_id)  # always returns None on failure
 
-            # Preload archive cache only if needed
-            doc_cache_dir = cache_dir / doc_id
-            doc = None
+            # Process items concurrently using thread pool
+            # Limit concurrency per document to avoid overwhelming I/O
+            max_workers = min(4, len(items))
+            results = [None] * len(items)
 
-            # Process all items for this doc
-            for item in items:
-                try:
-                    page_numbers, found = None, False
+            with ThreadPoolExecutor(max_workers=max_workers) as item_executor:
+                futures = {
+                    item_executor.submit(
+                        process_single_item, item, doc_id, file_path
+                    ): idx
+                    for idx, item in enumerate(items)
+                }
 
-                    # Primary: direct file search (PDF only; non-PDF returns False)
-                    if file_path:
-                        page_numbers, found = find_pages_in_document(
-                            file_path, item.text_start, item.text_end
+                for future in futures:
+                    idx = futures[future]
+                    try:
+                        results[idx] = future.result()
+                    except Exception as e:
+                        # Handle unexpected errors
+                        item = items[idx]
+                        results[idx] = LocatePageResult(
+                            request_id=item.request_id,
+                            doc_id=doc_id,
+                            page_numbers=[],
+                            found=False,
+                            error=f"Unexpected error: {str(e)}",
                         )
-
-                    # Fallback: archive cache
-                    if not found and doc_cache_dir.exists():
-                        if doc is None:
-                            try:
-                                doc = PageableDocument.load(doc_cache_dir)
-                            except Exception:
-                                doc = None
-                        if doc is not None:
-                            page_numbers, found = find_pages_for_text(
-                                doc, item.text_start, item.text_end
-                            )
-
-                    # Last resort: return page 1 rather than leaving caller empty
-                    if not found:
-                        page_numbers = [1]
-
-                    results.append(LocatePageResult(
-                        request_id=item.request_id,
-                        doc_id=doc_id,
-                        page_numbers=page_numbers,
-                        found=found,
-                        error=None if found else "Text not found; defaulting to page 1",
-                    ))
-                except Exception as e:
-                    # Item-level failure → page 1, never propagate
-                    results.append(LocatePageResult(
-                        request_id=item.request_id,
-                        doc_id=doc_id,
-                        page_numbers=[1],
-                        found=False,
-                        error=f"Search error: {str(e)}",
-                    ))
 
             return results
         except Exception as e:
-            # Doc-level failure → all items get page 1
+            # Doc-level failure
             return [
                 LocatePageResult(
                     request_id=item.request_id,
                     doc_id=doc_id,
-                    page_numbers=[1],
+                    page_numbers=[],
                     found=False,
                     error=f"Doc processing error: {str(e)}",
                 )
                 for item in items
             ]
-    
-    # Process all docs concurrently
-    loop = asyncio.get_event_loop()
-    
-    with ThreadPoolExecutor() as executor:
+
+    # Process all docs concurrently with limited workers
+    loop = asyncio.get_running_loop()
+
+    # Limit total concurrent documents to avoid resource exhaustion
+    # Each document also has internal concurrency (up to 4 items in parallel)
+    max_doc_workers = min(8, len(doc_groups))
+
+    with ThreadPoolExecutor(max_workers=max_doc_workers) as executor:
         futures = [
             loop.run_in_executor(executor, process_single_doc, doc_id, items)
             for doc_id, items in doc_groups.items()

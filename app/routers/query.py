@@ -5,7 +5,6 @@ from typing import List, Tuple, Dict, Any, Optional
 from cachetools import cached, TTLCache
 from cachetools.keys import hashkey
 import threading
-import traceback
 import asyncio
 
 logger = logging.getLogger("rag.query")
@@ -66,6 +65,15 @@ def _get_vector_store(collection_name: str) -> Any:
             timeout=60,
         )
     return _vector_store_cache[collection_name]
+
+
+def _invalidate_vector_store(collection_name: str) -> None:
+    """Evict a broken QdrantVectorStore from the cache.
+
+    Call this whenever a Qdrant operation raises a connection-level error so
+    that the next caller gets a fresh gRPC channel instead of reusing a broken one.
+    """
+    _vector_store_cache.pop(collection_name, None)
 
 
 def _get_fulltext_retriever(collection_name: str, top_k: int = 10) -> Any:
@@ -158,8 +166,8 @@ async def _rerank_units(
             else:
                 return await asyncio.to_thread(reranker.rerank, query, units, top_k)
     except Exception as e:
-        # Best-effort reranking: log and fall back to original units
-        logger.warning("Reranking failed, using original units: %s", e)
+        # Best-effort reranking: log full traceback and fall back to original units
+        logger.warning("Reranking failed, using original units", exc_info=True)
         return units
 
 
@@ -228,7 +236,7 @@ async def _perform_vector_query(dataset_id: str, request: QueryRequest) -> ApiRe
         )
         
     except Exception as e:
-        traceback.print_exc()
+        logger.error("Vector search failed", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Vector search failed: {str(e)}")
 
 
@@ -326,7 +334,7 @@ async def query_fulltext(dataset_id: str, request: QueryRequest):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        traceback.print_exc()
+        logger.error("Fulltext search failed", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Fulltext search failed: {str(e)}")
 
 
@@ -423,7 +431,7 @@ async def query_fusion(dataset_id: str, request: QueryRequest):
         return ApiResponse(success=True, code=200, data=unit_responses)
 
     except Exception as e:
-        traceback.print_exc()
+        logger.error("Fusion search failed", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Fusion search failed: {str(e)}")
 
 

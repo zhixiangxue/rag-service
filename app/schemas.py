@@ -288,7 +288,7 @@ class LocatePageResult(BaseModel):
     """Result for a single locate request."""
     request_id: str
     doc_id: str
-    page_numbers: Optional[List[int]] = None
+    page_numbers: List[int] = []
     found: bool
     error: Optional[str] = None
 

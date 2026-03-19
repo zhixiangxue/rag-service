@@ -106,7 +106,9 @@ exec gunicorn app.main:app \
     --worker-class uvicorn.workers.UvicornWorker \
     --workers "$WORKERS" \
     --bind 0.0.0.0:8000 \
-    --timeout 0 \
+    --timeout 300 \
     --keep-alive 180 \
+    --max-requests 500 \
+    --max-requests-jitter 50 \
     --access-logfile /dev/null \
     --error-logfile -

@@ -9,7 +9,7 @@ from fastapi.responses import RedirectResponse
 import os
 
 from .database import init_db
-from .routers import datasets, documents, tasks, query, units, health, demo, graph
+from .routers import datasets, documents, tasks, query, units, health, demo, graph, utility
 from .routers import dependencies
 from . import config
 
@@ -83,6 +83,7 @@ app.include_router(units.router)
 app.include_router(demo.router)
 app.include_router(graph.router)
 app.include_router(dependencies.router)
+app.include_router(utility.router)
 
 
 @app.get("/")
