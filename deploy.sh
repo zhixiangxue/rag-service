@@ -207,13 +207,20 @@ echo "Upgrading pip..."
 pip install --upgrade pip setuptools wheel
 echo ""
 
-# Step 4: Install zag-ai from GitHub
-echo -e "${GREEN}[4/9] Installing zag-ai from GitHub...${NC}"
-pip install --force-reinstall --no-cache-dir "zagpy[all] @ git+https://github.com/zhixiangxue/zag-ai.git"
+# Step 4: Clone zag-ai and install in editable mode
+echo -e "${GREEN}[4/9] Cloning zag-ai and installing in editable mode...${NC}"
+if [ -d "../zag-ai" ]; then
+    echo -e "${YELLOW}[WARN] Directory '../zag-ai' already exists. Pulling latest changes...${NC}"
+    git -C ../zag-ai pull
+else
+    git clone https://github.com/zhixiangxue/zag-ai.git ../zag-ai
+fi
+pip install -e "../zag-ai[all]"
 echo ""
 
-# Step 5: Install chak-ai from GitHub
-echo -e "${GREEN}[5/9] Installing chak-ai from GitHub...${NC}"
+# Step 5: Install chak-ai from PyPI
+echo -e "${GREEN}[5/9] Installing chak-ai from PyPI...${NC}"
+pip install "chakpy[all]"
 echo ""
 
 # Step 5.5: Install MinerU
