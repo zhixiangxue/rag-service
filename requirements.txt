@@ -20,4 +20,4 @@ PyPDF2>=3.0.0
 rich>=13.0.0
 
 # LLM client (for demo endpoint)
-chak-ai>=0.1.0
+chakpy>=0.1.0
