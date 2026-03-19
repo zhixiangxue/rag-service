@@ -207,6 +207,11 @@ echo "Upgrading pip..."
 pip install --upgrade pip setuptools wheel
 echo ""
 
+# Step 3.5: Install rag-service dependencies
+echo -e "${GREEN}[3.5/9] Installing rag-service dependencies...${NC}"
+pip install -r requirements.txt
+echo ""
+
 # Step 4: Clone zag-ai and install in editable mode
 echo -e "${GREEN}[4/9] Cloning zag-ai and installing in editable mode...${NC}"
 if [ -d "../zag-ai" ]; then

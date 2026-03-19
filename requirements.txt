@@ -21,6 +21,3 @@ rich>=13.0.0
 
 # LLM client (for demo endpoint)
 chak-ai>=0.1.0
-
-# Zag framework (install from GitHub)
-git+https://github.com/zhixiangxue/zag-ai.git#egg=zagpy[retriever,embedder]
