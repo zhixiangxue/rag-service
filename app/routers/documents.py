@@ -1396,7 +1396,7 @@ async def locate_pages(
             return LocatePageResult(
                 request_id=item.request_id,
                 doc_id=doc_id,
-                page_numbers=page_numbers,
+                page_numbers=page_numbers or [],
                 found=found,
                 error=None if found else "Text not found in source document",
             )
