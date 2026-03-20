@@ -36,10 +36,11 @@ from client import RagClient  # noqa: E402
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-# API_BASE   = "http://localhost:8000/" #local
+API_BASE   = "http://localhost:8000/" #local
 # API_BASE   = "http://13.56.109.233:8000/" #dev
 # API_BASE   = "http://54.215.128.27:8000/" #prod
-API_BASE   = "http://13.52.242.28:8000/" #prod
+# API_BASE   = "http://18.144.156.86:8000/" #prod
+# API_BASE = "http://internal-prod-269090500.us-west-1.elb.amazonaws.com/rag"
 DATASET_ID = "mvUisSWfRQx2Ap836jyIy"
 TIMEOUT    = 90.0
 

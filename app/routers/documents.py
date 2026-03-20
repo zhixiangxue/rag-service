@@ -32,6 +32,129 @@ from .. import config
 
 router = APIRouter(prefix="/datasets/{dataset_id}/documents", tags=["documents"])
 
+# ---------------------------------------------------------------------------
+# Module-level diskcache singleton for locate_pages
+# Stores (full_text: str, page_positions: list[(start, end, page_num)]) per doc_id.
+# Pre-warm with: python playground/prewarm_locate_cache.py
+# Initialized once at module load time — no lazy init, no race condition.
+# ---------------------------------------------------------------------------
+
+def _init_locate_cache():
+    """Open the diskcache at module load time. Returns None on error."""
+    try:
+        import diskcache
+        cache_dir = Path(config.LOCATE_CACHE_DIR)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache = diskcache.Cache(str(cache_dir), size_limit=int(20e9))
+        print(f"[locate] diskcache opened: {cache_dir}  entries={len(cache)}")
+        return cache
+    except Exception as exc:
+        print(f"[locate] diskcache unavailable, falling back to fitz: {exc}")
+        return None
+
+
+_locate_cache = _init_locate_cache()
+
+
+def _get_locate_cache():
+    """Return the module-level diskcache.Cache singleton."""
+    return _locate_cache
+
+
+def _extract_pdf_text_and_positions(file_path: str):
+    """
+    Extract normalized text and page character-positions from a PDF via fitz.
+
+    Replicates the exact same normalization used in find_pages_in_document so that
+    cached data is byte-for-byte equivalent to what the live path would produce.
+
+    Returns:
+        (full_text, page_positions) on success, or None on failure/scanned PDF.
+        page_positions: list of (page_start_char, page_end_char, page_number_1based)
+    """
+    try:
+        import fitz
+        from zag.utils.page_inference import normalize_text
+
+        doc = fitz.open(file_path)
+        full_text = ""
+        page_positions = []
+        current = 0
+        try:
+            for page in doc:
+                norm = normalize_text(page.get_text())
+                page_start = current
+                page_end = current + len(norm)
+                page_positions.append((page_start, page_end, page.number + 1))
+                full_text += ("\n" if full_text else "") + norm
+                current = page_end + 1
+
+                # Early bail-out for scanned PDFs (< 50 chars/page after 3 pages)
+                if page.number == 2 and len(full_text) / 3 < 50:
+                    return None
+        finally:
+            doc.close()
+
+        return full_text, page_positions
+    except Exception:
+        return None
+
+
+def _search_in_text(
+    full_text: str,
+    page_positions: list,
+    text_start: str,
+    text_end: str | None,
+) -> tuple[list[int] | None, bool]:
+    """
+    Search for text_start / text_end inside pre-extracted full_text.
+
+    Returns:
+        (page_numbers, found) — same contract as find_pages_in_document.
+    """
+    from zag.utils.page_inference import fuzzy_find_start, normalize_text
+
+    norm_start = normalize_text(text_start)
+    norm_end = normalize_text(text_end) if text_end else None
+
+    start_pos = fuzzy_find_start(norm_start, full_text, start_from=0, threshold=0.85)
+    if start_pos is None:
+        return None, False
+
+    # Reject ambiguous matches: if text_start appears more than once, the location
+    # is undetermined — returning the first hit would likely be wrong.
+    duplicate = fuzzy_find_start(
+        norm_start, full_text,
+        start_from=start_pos + 1,
+        threshold=0.85,
+    )
+    if duplicate is not None:
+        return None, False
+
+    if norm_end:
+        found_end = fuzzy_find_start(
+            norm_end, full_text,
+            start_from=start_pos + len(norm_start),
+            threshold=0.85,
+            max_search_range=100_000,
+        )
+        end_pos = (found_end + len(norm_end)) if found_end is not None else (start_pos + len(norm_start))
+    else:
+        end_pos = start_pos + len(norm_start)
+
+    pages = sorted(
+        pn for ps, pe, pn in page_positions
+        if not (end_pos <= ps or start_pos >= pe)
+    )
+    if not pages:
+        return [], False
+
+    # Reject implausibly wide spans — likely a false-positive start match.
+    if len(pages) > 10:
+        return None, False
+
+    return pages, True
+
 
 def _build_file_url(stored_path: str, base_dir_str: Optional[str] = None) -> Optional[str]:
     """Build file_url from stored file path (s3:// or local)."""
@@ -1155,161 +1278,6 @@ async def locate_pages(
     from collections import defaultdict
     from concurrent.futures import ThreadPoolExecutor
     
-    from zag.schemas.document import PageableDocument
-    from zag.utils.page_inference import fuzzy_find_start
-    
-    # Cache directory for PDF parsing results
-    cache_dir = Path(config.ARCHIVES_DIR)
-    
-    # Group items by doc_id for efficient processing
-    doc_groups: dict[str, list] = defaultdict(list)
-    for item in request.items:
-        doc_groups[item.doc_id].append(item)
-    
-    def find_pages_for_text(doc: PageableDocument, text_start: str, text_end: str = None) -> tuple[list[int] | None, bool]:
-        """
-        Find page numbers for a text snippet.
-        
-        Returns:
-            (page_numbers, found)
-        """
-        # Find start position
-        # Search entire document (no range limit for correctness)
-        start_pos = fuzzy_find_start(text_start, doc.content, start_from=0, threshold=0.80)
-        
-        if start_pos is None:
-            return None, False
-        
-        # Determine end position
-        if text_end:
-            end_pos = fuzzy_find_start(text_end, doc.content, start_from=start_pos + len(text_start), threshold=0.80, max_search_range=100000)
-            if end_pos is None:
-                # Fallback: estimate length from text_start
-                end_pos = start_pos + len(text_start)
-            else:
-                end_pos = end_pos + len(text_end)
-        else:
-            end_pos = start_pos + len(text_start)
-        
-        # Build page positions
-        page_positions = []
-        current_pos = 0
-        
-        for page in doc.pages:
-            page_content = page.content or ""
-            if not page_content.strip():
-                page_positions.append((current_pos, current_pos, page.page_number))
-                continue
-            
-            # Find page in full content
-            page_sig = page_content[:50] if len(page_content) > 50 else page_content
-            pos = doc.content.find(page_sig, current_pos)
-            
-            if pos != -1:
-                page_positions.append((pos, pos + len(page_content), page.page_number))
-                current_pos = pos + 1
-            else:
-                page_positions.append((current_pos, current_pos + len(page_content), page.page_number))
-                current_pos += len(page_content) + 1
-        
-        # Find overlapping pages
-        overlapping = []
-        for page_start, page_end, page_num in page_positions:
-            if not (end_pos <= page_start or start_pos >= page_end):
-                overlapping.append(page_num)
-        
-        return sorted(overlapping) if overlapping else None, True
-    
-    def find_pages_in_document(file_path: str, text_start: str, text_end: str = None) -> tuple[list[int] | None, bool]:
-        """
-        Search directly in the document file for accurate page numbers.
-        Only PDF files are searched via fitz; all other formats fall back to the
-        archive cache (handled by the caller).
-        """
-        ext = Path(file_path).suffix.lower()
-        if ext != '.pdf':
-            # Non-PDF (DOCX, DOC, MD, TXT, etc.): fitz cannot open these formats.
-            # Page location still works for these files via the archive-cache path:
-            # DoclingReader / MarkItDownReader writes a PageableDocument with real
-            # page structure (or a synthetic single page) into ARCHIVES_DIR when
-            # the document is first processed.  The caller will load that cache
-            # and call find_pages_for_text(), which works on any PageableDocument.
-            return None, False
-
-        import fitz
-        from zag.utils.page_inference import normalize_text
-
-        norm_start = normalize_text(text_start)
-        norm_end = normalize_text(text_end) if text_end else None
-
-        full_text = ""
-        page_positions = []
-        current = 0
-        start_pos = None
-        end_pos = None
-        search_from = 0  # incremental search, avoid re-scanning old pages
-
-        doc = fitz.open(file_path)
-        try:
-            for page in doc:
-                page_num = page.number + 1
-                norm = normalize_text(page.get_text())
-
-                page_start = current
-                page_end = current + len(norm)
-                page_positions.append((page_start, page_end, page_num))
-                full_text += ("\n" if full_text else "") + norm
-                current = page_end + 1
-
-                # Early scanned-PDF detection after 3 pages
-                if page_num == 3 and len(full_text) / 3 < 50:
-                    return None, False  # fallback to MinerU cache
-
-                # Search only the newly added portion
-                if start_pos is None:
-                    found = fuzzy_find_start(norm_start, full_text, start_from=search_from, threshold=0.85)
-                    if found is not None:
-                        start_pos = found
-                    else:
-                        search_from = max(0, len(full_text) - len(norm_start) - 10)
-
-                if start_pos is not None:
-                    if norm_end:
-                        found_end = fuzzy_find_start(
-                            norm_end, full_text,
-                            start_from=start_pos + len(norm_start),
-                            threshold=0.85,
-                            max_search_range=100000,
-                        )
-                        if found_end is not None:
-                            end_pos = found_end + len(norm_end)
-                            break
-                        # If start found and we've searched max_search_range without finding end,
-                        # stop reading more pages to avoid unnecessary I/O
-                        elif len(full_text) - start_pos > 100000 + len(norm_start):
-                            break
-                    else:
-                        end_pos = start_pos + len(norm_start)
-                        break
-        finally:
-            doc.close()
-
-        if start_pos is None:
-            return None, False
-
-        if end_pos is None:
-            end_pos = start_pos + len(norm_start)
-
-        overlapping = [
-            pn for ps, pe, pn in page_positions
-            if not (end_pos <= ps or start_pos >= pe)
-        ]
-        # If text was found but no pages overlap (page_positions mapping failed),
-        # treat as not-found rather than returning found=True with empty pages.
-        if not overlapping:
-            return [], False
-        return sorted(overlapping), True
-
     def get_file_path_for_doc(doc_id: str) -> str | None:
         """
         Return a local path to the original document for the given doc_id.
@@ -1372,80 +1340,60 @@ async def locate_pages(
         except Exception:
             return None
 
-    def process_single_item(
-        item,
-        doc_id: str,
-        file_path: str | None,
-    ) -> LocatePageResult:
-        """
-        Process a single item for page location.
-        Searches the original document file only. Returns found=False / page_numbers=[]
-        when the text cannot be located — callers decide how to handle a miss.
-        """
-        try:
-            page_numbers, found = None, False
-
-            # Primary: direct file search (PDF only; non-PDF returns False).
-            # No archive-cache fallback: parsed cache page boundaries can be inaccurate,
-            # and a wrong page number is more harmful than an honest not-found result.
-            if file_path:
-                page_numbers, found = find_pages_in_document(
-                    file_path, item.text_start, item.text_end
-                )
-
-            return LocatePageResult(
-                request_id=item.request_id,
-                doc_id=doc_id,
-                page_numbers=page_numbers or [],
-                found=found,
-                error=None if found else "Text not found in source document",
-            )
-        except Exception as e:
-            return LocatePageResult(
-                request_id=item.request_id,
-                doc_id=doc_id,
-                page_numbers=[],
-                found=False,
-                error=f"Search error: {str(e)}",
-            )
-
     def process_single_doc(doc_id: str, items: list) -> list[LocatePageResult]:
-        """Process all items for a single document concurrently. Never raises."""
+        """Process all items for a single document. Uses diskcache when available. Never raises."""
         try:
-            # Try to get the actual document file for accurate page lookup
-            file_path = get_file_path_for_doc(doc_id)  # always returns None on failure
+            cache = _get_locate_cache()
 
-            # Process items concurrently using thread pool
-            # Limit concurrency per document to avoid overwhelming I/O
-            max_workers = min(4, len(items))
-            results = [None] * len(items)
+            # Step 1: get (full_text, page_positions) — from cache or by parsing the PDF.
+            # On a cache miss, parse via fitz and write back to cache before searching,
+            # so all searches always run on the same cached-text path.
+            entry = cache.get(doc_id) if cache is not None else None
 
-            with ThreadPoolExecutor(max_workers=max_workers) as item_executor:
-                futures = {
-                    item_executor.submit(
-                        process_single_item, item, doc_id, file_path
-                    ): idx
-                    for idx, item in enumerate(items)
-                }
-
-                for future in futures:
-                    idx = futures[future]
+            if entry is None:
+                file_path = get_file_path_for_doc(doc_id)
+                if not (file_path and Path(file_path).suffix.lower() == '.pdf'):
+                    return [LocatePageResult(request_id=item.request_id, doc_id=doc_id,
+                                             page_numbers=[], found=False,
+                                             error="Source file not available or not a PDF")
+                            for item in items]
+                entry = _extract_pdf_text_and_positions(file_path)
+                if entry is None:
+                    return [LocatePageResult(request_id=item.request_id, doc_id=doc_id,
+                                             page_numbers=[], found=False,
+                                             error="PDF appears to be scanned or contains no extractable text")
+                            for item in items]
+                if cache is not None:
                     try:
-                        results[idx] = future.result()
-                    except Exception as e:
-                        # Handle unexpected errors
-                        item = items[idx]
-                        results[idx] = LocatePageResult(
-                            request_id=item.request_id,
-                            doc_id=doc_id,
-                            page_numbers=[],
-                            found=False,
-                            error=f"Unexpected error: {str(e)}",
-                        )
+                        cache.set(doc_id, entry)
+                    except Exception:
+                        pass
 
+            full_text, page_positions = entry
+            results = []
+            for item in items:
+                try:
+                    page_numbers, found = _search_in_text(
+                        full_text, page_positions, item.text_start, item.text_end
+                    )
+                    results.append(LocatePageResult(
+                        request_id=item.request_id,
+                        doc_id=doc_id,
+                        page_numbers=page_numbers or [],
+                        found=found,
+                        error=None if found else "Text not found in source document",
+                    ))
+                except Exception as e:
+                    results.append(LocatePageResult(
+                        request_id=item.request_id,
+                        doc_id=doc_id,
+                        page_numbers=[],
+                        found=False,
+                        error=f"Search error: {str(e)}",
+                    ))
             return results
+
         except Exception as e:
-            # Doc-level failure
             return [
                 LocatePageResult(
                     request_id=item.request_id,
@@ -1457,12 +1405,16 @@ async def locate_pages(
                 for item in items
             ]
 
-    # Process all docs concurrently with limited workers
+    # Group items by doc_id, then process all docs concurrently
+    doc_groups: dict[str, list] = defaultdict(list)
+    for item in request.items:
+        doc_groups[item.doc_id].append(item)
+
     loop = asyncio.get_running_loop()
 
-    # Limit total concurrent documents to avoid resource exhaustion
-    # Each document also has internal concurrency (up to 4 items in parallel)
-    max_doc_workers = min(8, len(doc_groups))
+    # Cache path: no disk I/O per-doc, CPU-only fuzzy search → can safely use more workers.
+    # Fitz fallback still benefits from parallelism without heavy I/O contention.
+    max_doc_workers = min(32, len(doc_groups))
 
     with ThreadPoolExecutor(max_workers=max_doc_workers) as executor:
         futures = [

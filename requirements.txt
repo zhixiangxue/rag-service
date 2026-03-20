@@ -18,6 +18,10 @@ python-dotenv>=1.0.0
 schedule>=1.2.0
 PyPDF2>=3.0.0
 rich>=13.0.0
+cohere>=5.20.2
 
 # LLM client (for demo endpoint)
 chakpy>=0.1.0
+
+# Persistent disk cache for locate_pages acceleration
+diskcache>=5.6.0
