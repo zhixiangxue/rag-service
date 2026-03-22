@@ -1259,6 +1259,36 @@ async def upload_document_cache(
             pass  # Windows: file lock not yet released, OS will clean up temp dir
 
 
+# TEMPORARY HACK — TODO: delete this function once the two broken docs are re-indexed.
+# Context: doc IDs below have a malformed page-1 that catches too many fuzzy matches,
+# producing false-positive page-1 results. Forcing those results to "not found" is the
+# quickest safe workaround while waiting for a proper re-parse.
+_BAD_PAGE1_DOC_IDS = {"883489afd016d9e4", "86ffa34b6ce3cecc"}
+
+
+def _patch_bad_page1_docs(results: list["LocatePageResult"]) -> list["LocatePageResult"]:
+    """TEMPORARY: Suppress false-positive page-1 hits for known broken documents.
+
+    For doc IDs in ``_BAD_PAGE1_DOC_IDS``, any result whose only matched page is
+    page 1 is replaced with a not-found result. Multi-page results that include
+    page 1 alongside other pages are left untouched.
+
+    TODO: Remove this function (and its call site) once the affected documents
+    have been re-indexed with a corrected PDF parser.
+    """
+    patched = []
+    for r in results:
+        if r.doc_id in _BAD_PAGE1_DOC_IDS and r.page_numbers == [1]:
+            patched.append(r.model_copy(update={
+                "page_numbers": [],
+                "found": False,
+                "error": "Text not found in source document",
+            }))
+        else:
+            patched.append(r)
+    return patched
+
+
 @router.post("/locate", response_model=ApiResponse[LocatePageResponse])
 async def locate_pages(
     dataset_id: str,
@@ -1427,7 +1457,13 @@ async def locate_pages(
     results = []
     for doc_results in all_results:
         results.extend(doc_results)
-    
+
+    # TEMPORARY HACK — TODO: remove once upstream PDF indexing is fixed for these two docs.
+    # These documents have a bad page-1 extraction (likely a cover/TOC page that absorbs
+    # fuzzy matches). Any result landing on page 1 is almost certainly a false positive,
+    # so we force them to "not found" to avoid surfacing garbage to the caller.
+    results = _patch_bad_page1_docs(results)
+
     return ApiResponse(
         success=True,
         code=200,

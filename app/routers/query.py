@@ -17,6 +17,7 @@ from zag.storages.vector import QdrantVectorStore
 from zag.retrievers.basic import VectorRetriever, FullTextRetriever
 from zag.retrievers.composite import QueryFusionRetriever, FusionMode, QueryRewriteRetriever
 from zag.postprocessors import Reranker
+from zag.postprocessors.augmentors.table_context import TableContextExpander, ExpandMode
 from zag.schemas import LODLevel
 
 router = APIRouter(prefix="/datasets", tags=["query"])
@@ -403,6 +404,17 @@ async def query_fusion(dataset_id: str, request: QueryRequest):
             filters=request.filters,
         )
         logger.debug("[fusion] retrieve: %.2fs", _time.perf_counter()-_t1)
+
+        # Expand table units with surrounding context before reranking so the
+        # reranker scores complete semantic chunks instead of bare HTML tables.
+        # TODO 未带来明显的好转，暂时注释掉 @xue
+        # _t_expand = _time.perf_counter()
+        # expander = TableContextExpander(
+        #     vector_store=vector_store,
+        #     expand_mode=ExpandMode.SIBLING,
+        # )
+        # units = await expander.aprocess(request.query, units)
+        # logger.debug("[fusion] table expand: %.2fs", _time.perf_counter()-_t_expand)
 
         # Rerank then filter by score threshold
         _t2 = _time.perf_counter()
