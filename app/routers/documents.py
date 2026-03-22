@@ -1278,7 +1278,7 @@ def _patch_bad_page1_docs(results: list["LocatePageResult"]) -> list["LocatePage
     """
     patched = []
     for r in results:
-        if r.doc_id in _BAD_PAGE1_DOC_IDS and r.page_numbers == [1]:
+        if r.doc_id in _BAD_PAGE1_DOC_IDS and 1 in r.page_numbers:
             patched.append(r.model_copy(update={
                 "page_numbers": [],
                 "found": False,
