@@ -12,6 +12,7 @@ from pathlib import Path
 from zag.utils.hash import calculate_file_hash
 from ..utils.s3 import get_s3_object_info, download_file_from_s3_async
 from ..database import get_connection, now, generate_id
+from ..repositories import DatasetRepository, DocumentRepository, TaskRepository, DependencyRepository
 from ..domain.deps import Rule, DependencySource
 from ..schemas import (
     DocumentResponse,
@@ -247,35 +248,26 @@ def _create_document_record(
     # The path actually stored in DB
     db_path = s3_url if s3_url else file_path
     conn = get_connection()
-    cursor = conn.cursor()
+    doc_repo = DocumentRepository(conn)
 
     try:
         # Check if dataset exists
-        cursor.execute("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
-        if not cursor.fetchone():
+        if not DatasetRepository(conn).exists(dataset_id):
             raise HTTPException(status_code=404, detail="Dataset not found")
 
         # Calculate file hash using zag's utility on saved file
         file_hash = calculate_file_hash(file_path)
 
         # Check for duplicate: same dataset + same file_hash
-        cursor.execute(
-            "SELECT id, file_name, file_path FROM documents WHERE dataset_id = ? AND file_hash = ?",
-            (dataset_id, file_hash)
-        )
-        existing_doc = cursor.fetchone()
+        existing_doc = doc_repo.get_by_hash(dataset_id, file_hash)
 
         if existing_doc:
             # Duplicate: update file_path to latest and return
-            cursor.execute(
-                "UPDATE documents SET file_path = ?, updated_at = ? WHERE id = ?",
-                (db_path, now(), existing_doc['id'])
-            )
-            conn.commit()
+            doc_repo.update_file_path(existing_doc["id"], db_path, now())
             return {
                 "dataset_id": str(dataset_id),
-                "doc_id": str(existing_doc['id']),
-                "file_name": existing_doc['file_name'],
+                "doc_id": str(existing_doc["id"]),
+                "file_name": existing_doc["file_name"],
                 "file_hash": file_hash,
                 "is_duplicate": True
             }
@@ -302,15 +294,11 @@ def _create_document_record(
         # Create Document record with file_hash and metadata
         # Use INSERT OR IGNORE to handle race conditions
         try:
-            cursor.execute(
-                """
-                INSERT INTO documents (id, dataset_id, file_name, file_path, workspace_dir, file_size, file_type, file_hash, metadata, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (doc_id, dataset_id, filename, db_path, workspace_dir, file_size, file_type, file_hash, metadata_json, DocumentStatus.PROCESSING, timestamp, timestamp)
+            doc_repo.create(
+                doc_id, dataset_id, filename, db_path, workspace_dir,
+                file_size, file_type, file_hash, metadata_json,
+                DocumentStatus.PROCESSING, timestamp
             )
-            conn.commit()
-
             return {
                 "dataset_id": str(dataset_id),
                 "doc_id": str(doc_id),
@@ -322,15 +310,11 @@ def _create_document_record(
         except sqlite3.IntegrityError:
             # Race condition: another request inserted the same file first, just return duplicate
             conn.rollback()
-            cursor.execute(
-                "SELECT id, file_name FROM documents WHERE dataset_id = ? AND file_hash = ?",
-                (dataset_id, file_hash)
-            )
-            existing_doc = cursor.fetchone()
+            existing_doc = doc_repo.get_by_hash(dataset_id, file_hash)
             return {
                 "dataset_id": str(dataset_id),
-                "doc_id": str(existing_doc['id']),
-                "file_name": existing_doc['file_name'],
+                "doc_id": str(existing_doc["id"]),
+                "file_name": existing_doc["file_name"],
                 "file_hash": file_hash,
                 "is_duplicate": True
             }
@@ -546,43 +530,28 @@ async def create_task(
 ):
     """Create a processing task for an existing document."""
     conn = get_connection()
-    cursor = conn.cursor()
+    doc_repo = DocumentRepository(conn)
+    task_repo = TaskRepository(conn)
 
-    # Check if document exists
-    cursor.execute(
-        "SELECT * FROM documents WHERE id = ? AND dataset_id = ?",
-        (doc_id, dataset_id)
-    )
-    doc = cursor.fetchone()
-
+    doc = doc_repo.get(doc_id, dataset_id)
     if not doc:
         conn.close()
         raise HTTPException(status_code=404, detail="Document not found")
 
     # Parse document metadata
-    doc_metadata = json.loads(doc["metadata"]) if "metadata" in doc.keys() and doc["metadata"] else None
-    
+    doc_metadata = json.loads(doc["metadata"]) if doc.get("metadata") else None
+
     timestamp = now()
     task_id = generate_id()
-    
+
     # Create Task record
-    cursor.execute(
-        """
-        INSERT INTO tasks (id, dataset_id, doc_id, mode, reader, status, progress, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (task_id, dataset_id, doc_id, mode.value, reader.value, TaskStatus.PENDING, 0, timestamp, timestamp)
-    )
-    conn.commit()
-    
+    task_repo.create(task_id, dataset_id, doc_id, mode.value, reader.value,
+                     TaskStatus.PENDING, 0, timestamp)
+
     # Update document status and task_id
-    cursor.execute(
-        "UPDATE documents SET status = ?, task_id = ?, updated_at = ? WHERE id = ?",
-        (DocumentStatus.PROCESSING, task_id, timestamp, doc_id)
-    )
-    conn.commit()
+    doc_repo.update_task_link(doc_id, DocumentStatus.PROCESSING, task_id, timestamp)
     conn.close()
-    
+
     # Enqueue task to Dramatiq worker
     later.process_document(task_id)
 
@@ -618,12 +587,7 @@ async def export_units_excel(dataset_id: str, doc_id: str):
 
     # Verify document exists
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT file_name FROM documents WHERE id = ? AND dataset_id = ?",
-        (doc_id, dataset_id)
-    )
-    row = cursor.fetchone()
+    row = DocumentRepository(conn).get(doc_id, dataset_id)
     conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -691,12 +655,7 @@ async def download_document(dataset_id: str, doc_id: str):
     Works for both local and S3-backed files.
     """
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT file_name, file_path FROM documents WHERE id = ? AND dataset_id = ?",
-        (doc_id, dataset_id)
-    )
-    row = cursor.fetchone()
+    row = DocumentRepository(conn).get(doc_id, dataset_id)
     conn.close()
 
     if not row:
@@ -774,15 +733,13 @@ def get_document_views(
 
     # Resolve collection_name
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT name FROM datasets WHERE id = ?", (dataset_id,))
-    row = cursor.fetchone()
+    ds = DatasetRepository(conn).get(dataset_id)
     conn.close()
 
-    if not row:
+    if not ds:
         raise HTTPException(status_code=404, detail="Dataset not found")
     else:
-        collection_name = row["name"]
+        collection_name = ds["name"]
 
     # Fetch LOD unit via QdrantVectorStore.fetch
     try:
@@ -839,41 +796,26 @@ def get_document_views(
 def list_document_tasks(dataset_id: str, doc_id: str):
     """Get all tasks for a specific document."""
     conn = get_connection()
-    cursor = conn.cursor()
-    
-    # Check if document exists
-    cursor.execute(
-        "SELECT * FROM documents WHERE id = ? AND dataset_id = ?",
-        (doc_id, dataset_id)
-    )
-    if not cursor.fetchone():
+    doc_repo = DocumentRepository(conn)
+    task_repo = TaskRepository(conn)
+
+    if not doc_repo.get(doc_id, dataset_id):
         conn.close()
         raise HTTPException(status_code=404, detail="Document not found")
-    
-    # Query tasks and JOIN documents to get metadata
-    cursor.execute(
-        """
-        SELECT t.*, d.metadata as doc_metadata
-        FROM tasks t
-        LEFT JOIN documents d ON t.doc_id = d.id
-        WHERE t.dataset_id = ? AND t.doc_id = ?
-        ORDER BY t.created_at DESC
-        """,
-        (dataset_id, doc_id)
-    )
-    rows = cursor.fetchall()
+
+    rows = task_repo.list_by_doc(dataset_id, doc_id)
     conn.close()
-    
+
     results = []
     for row in rows:
         error_message = json.loads(row["error_message"]) if row["error_message"] else None
-        doc_metadata = json.loads(row["doc_metadata"]) if "doc_metadata" in row.keys() and row["doc_metadata"] else None
+        doc_metadata = json.loads(row["doc_metadata"]) if row.get("doc_metadata") else None
         results.append(TaskResponse(
             task_id=str(row["id"]),
             dataset_id=str(row["dataset_id"]),
             doc_id=str(row["doc_id"]),
-            mode=row["mode"] if "mode" in row.keys() else "classic",
-            reader=row["reader"] if "reader" in row.keys() else "mineru",
+            mode=row.get("mode", "classic"),
+            reader=row.get("reader", "mineru"),
             status=row["status"],
             progress=row["progress"],
             metadata=doc_metadata,
@@ -881,7 +823,7 @@ def list_document_tasks(dataset_id: str, doc_id: str):
             created_at=row["created_at"],
             updated_at=row["updated_at"]
         ))
-    
+
     return ApiResponse(success=True, code=200, data=results)
 
 
@@ -893,37 +835,25 @@ def list_documents(
 ):
     """List documents in a dataset."""
     conn = get_connection()
-    cursor = conn.cursor()
-    
-    # Check if dataset exists
-    cursor.execute("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
-    if not cursor.fetchone():
+    dataset_repo = DatasetRepository(conn)
+    doc_repo = DocumentRepository(conn)
+
+    if not dataset_repo.exists(dataset_id):
         conn.close()
         raise HTTPException(status_code=404, detail="Dataset not found")
-    
-    # Query documents
-    if status:
-        cursor.execute(
-            "SELECT * FROM documents WHERE dataset_id = ? AND status = ? ORDER BY created_at DESC",
-            (dataset_id, status)
-        )
-    else:
-        cursor.execute(
-            "SELECT * FROM documents WHERE dataset_id = ? ORDER BY created_at DESC",
-            (dataset_id,)
-        )
-    
-    rows = cursor.fetchall()
+
+    rows = doc_repo.list_by_dataset(dataset_id, status)
+    conn.close()
+
     if limit is not None:
         rows = rows[:limit]
-    conn.close()
 
     # Pre-compute base_dir_str once for all file_url builds (pure string, no I/O per row)
     base_dir_str = Path(get_storage().base_dir).resolve().as_posix()
 
     results = []
     for row in rows:
-        doc_metadata = json.loads(row["metadata"]) if "metadata" in row.keys() and row["metadata"] else None
+        doc_metadata = json.loads(row["metadata"]) if row.get("metadata") else None
         results.append(DocumentResponse(
             doc_id=str(row["id"]),
             dataset_id=str(row["dataset_id"]),
@@ -933,7 +863,7 @@ def list_documents(
             workspace_dir=row["workspace_dir"],
             file_size=row["file_size"],
             file_type=row["file_type"],
-            file_hash=row["file_hash"] if "file_hash" in row.keys() else None,
+            file_hash=row.get("file_hash"),
             metadata=doc_metadata,
             status=row["status"],
             task_id=str(row["task_id"]) if row["task_id"] else None,
@@ -941,7 +871,7 @@ def list_documents(
             created_at=row["created_at"],
             updated_at=row["updated_at"]
         ))
-    
+
     return ApiResponse(success=True, code=200, data=results)
 
 
@@ -953,19 +883,14 @@ async def get_document(
 ):
     """Get document by ID."""
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT * FROM documents WHERE id = ? AND dataset_id = ?",
-        (doc_id, dataset_id)
-    )
-    row = cursor.fetchone()
+    row = DocumentRepository(conn).get(doc_id, dataset_id)
     conn.close()
 
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
 
     # Parse document metadata
-    doc_metadata = json.loads(row["metadata"]) if "metadata" in row.keys() and row["metadata"] else None
+    doc_metadata = json.loads(row["metadata"]) if row.get("metadata") else None
 
     # Build file_url for the worker to fetch the file
     file_url = _build_file_url(row["file_path"])
@@ -973,7 +898,7 @@ async def get_document(
     # Unit count: use cached DB value by default; only hit Qdrant when explicitly requested.
     # Calling acount on every GET is risky: a broken gRPC/HTTP connection will hang
     # the request until timeout and pollute all callers sharing the singleton cache.
-    unit_count = row["unit_count"] if "unit_count" in row.keys() else None
+    unit_count = row.get("unit_count")
     if realtime_count:
         collection_name = None
         try:
@@ -1007,7 +932,7 @@ async def get_document(
         workspace_dir=row["workspace_dir"],
         file_size=row["file_size"],
         file_type=row["file_type"],
-        file_hash=row["file_hash"] if "file_hash" in row.keys() else None,
+        file_hash=row.get("file_hash"),
         metadata=doc_metadata,
         status=row["status"],
         task_id=str(row["task_id"]) if row["task_id"] else None,
@@ -1033,35 +958,18 @@ async def update_document(
         raise HTTPException(status_code=400, detail=str(e))
 
     conn = get_connection()
-    cursor = conn.cursor()
+    doc_repo = DocumentRepository(conn)
 
-    # Check if document exists
-    cursor.execute(
-        "SELECT * FROM documents WHERE id = ? AND dataset_id = ?",
-        (doc_id, dataset_id)
-    )
-    row = cursor.fetchone()
-
+    row = doc_repo.get(doc_id, dataset_id)
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Update metadata
     timestamp = now()
     metadata_json = json.dumps(metadata)
+    doc_repo.update_metadata(doc_id, metadata_json, timestamp)
 
-    cursor.execute(
-        "UPDATE documents SET metadata = ?, updated_at = ? WHERE id = ?",
-        (metadata_json, timestamp, doc_id)
-    )
-    conn.commit()
-
-    # Fetch updated record
-    cursor.execute(
-        "SELECT * FROM documents WHERE id = ?",
-        (doc_id,)
-    )
-    updated = cursor.fetchone()
+    updated = doc_repo.get(doc_id)
     conn.close()
 
     doc_metadata = json.loads(updated["metadata"]) if updated["metadata"] else None
@@ -1078,7 +986,7 @@ async def update_document(
             workspace_dir=updated["workspace_dir"],
             file_size=updated["file_size"],
             file_type=updated["file_type"],
-            file_hash=updated["file_hash"],
+            file_hash=updated.get("file_hash"),
             metadata=doc_metadata,
             status=updated["status"],
             task_id=str(updated["task_id"]) if updated["task_id"] else None,
@@ -1097,24 +1005,18 @@ def delete_document(dataset_id: str, doc_id: str):
     Callers should resolve dependencies before retrying.
     """
     conn = get_connection()
-    cursor = conn.cursor()
-    
-    # Check if document exists and get dataset info
-    cursor.execute(
-        "SELECT * FROM documents WHERE id = ? AND dataset_id = ?",
-        (doc_id, dataset_id)
-    )
-    doc = cursor.fetchone()
+    doc_repo = DocumentRepository(conn)
+    dep_repo = DependencyRepository(conn)
+    task_repo = TaskRepository(conn)
+    dataset_repo = DatasetRepository(conn)
+
+    doc = doc_repo.get(doc_id, dataset_id)
     if not doc:
         conn.close()
         raise HTTPException(status_code=404, detail="Document not found")
-    
+
     # Check for active dependencies (documents that depend on this one)
-    cursor.execute(
-        "SELECT rule, target_doc_id FROM dependencies WHERE target_doc_id = ? AND dataset_id = ?",
-        (doc_id, dataset_id)
-    )
-    dependencies = cursor.fetchall()
+    dependencies = dep_repo.list_by_target(doc_id, dataset_id)
     if dependencies:
         conn.close()
         dep_list = [{"rule": d["rule"], "target_doc_id": d["target_doc_id"]} for d in dependencies]
@@ -1125,25 +1027,18 @@ def delete_document(dataset_id: str, doc_id: str):
                 "dependencies": dep_list
             }
         )
-    
-    # Get dataset name as collection_name
-    cursor.execute("SELECT name FROM datasets WHERE id = ?", (dataset_id,))
-    dataset = cursor.fetchone()
-    if not dataset:
+
+    ds = dataset_repo.get(dataset_id)
+    if not ds:
         conn.close()
         raise HTTPException(status_code=404, detail="Dataset not found")
-    
-    collection_name = dataset["name"]
-    
-    # Delete from database
-    # Clean up dependencies where this doc is the source (doc:<doc_id>)
-    cursor.execute(
-        "DELETE FROM dependencies WHERE rule = ? AND dataset_id = ?",
-        (str(Rule.build(DependencySource.DOC, doc_id)), dataset_id)
-    )
-    cursor.execute("DELETE FROM tasks WHERE doc_id = ?", (doc_id,))
-    cursor.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
-    conn.commit()
+
+    collection_name = ds["name"]
+
+    # Delete from database: source-level dependencies, tasks, document
+    dep_repo.delete_by_rule(str(Rule.build(DependencySource.DOC, doc_id)), dataset_id)
+    task_repo.delete_by_doc(doc_id)
+    doc_repo.delete(doc_id)
     conn.close()
     
     # Cleanup vector store
@@ -1348,8 +1243,7 @@ async def locate_pages(
             # 2. Get file_path from DB
             conn = get_connection()
             try:
-                cursor = conn.execute("SELECT file_path FROM documents WHERE id = ?", (doc_id,))
-                row = cursor.fetchone()
+                row = DocumentRepository(conn).get(doc_id)
                 if not row or not row["file_path"]:
                     return None
                 file_path = row["file_path"]

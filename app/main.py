@@ -2,31 +2,64 @@
 import sys
 import time
 import logging
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
 
-from .database import init_db
 from .routers import datasets, documents, tasks, query, units, health, demo, graph, utility
 from .routers import dependencies
 from . import config
 
 # Logging configuration: timestamp + level + logger name + message
+_LOG_FORMAT = "%(asctime)s.%(msecs)03d | %(levelname)-5s | %(name)s | %(message)s"
+_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s.%(msecs)03d | %(levelname)-5s | %(name)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    format=_LOG_FORMAT,
+    datefmt=_LOG_DATEFMT,
 )
+
+# File handler: plain-text (no ANSI), 10 MB × 5 backups
+_log_dir = Path(__file__).parent.parent / "log"
+_log_dir.mkdir(parents=True, exist_ok=True)
+_file_handler = RotatingFileHandler(
+    _log_dir / "access.log",
+    maxBytes=10 * 1024 * 1024,
+    backupCount=5,
+    encoding="utf-8",
+)
+_file_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+
+
+class _FileLogFilter(logging.Filter):
+    """Suppress noisy access records from the file log."""
+    _SKIP = {
+        ("GET", "/health"),
+    }
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        for method, path in self._SKIP:
+            if msg.startswith(method) and path in msg:
+                return False
+        return True
+
+
+_file_handler.addFilter(_FileLogFilter())
+_root_logger = logging.getLogger()
+if not any(h.baseFilename == str(_log_dir / "access.log") for h in _root_logger.handlers if hasattr(h, "baseFilename")):
+    _root_logger.addHandler(_file_handler)
+
 # Enable debug-level sub-timing from query router with: LOG_LEVEL=DEBUG
 _log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.getLogger("rag").setLevel(getattr(logging, _log_level, logging.INFO))
 
 logger = logging.getLogger("rag.main")
-
-# Initialize database
-init_db()
 
 
 # Create FastAPI app
@@ -103,7 +136,7 @@ if __name__ == "__main__":
         print("  RAG Service Configuration Summary")
         print("=" * 60)
         print(f"\n[Database]")
-        print(f"  DATABASE_PATH: {os.path.abspath(config.DATABASE_PATH)}")
+        print(f"  DATABASE_URI: {config.DATABASE_URI}")
         print(f"\n[Cache]")
         _archives_dir = os.path.abspath(config.ARCHIVES_DIR)
         _pdf_dir = os.path.abspath(config.PDF_FILES_DIR)

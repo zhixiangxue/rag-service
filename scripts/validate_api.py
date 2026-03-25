@@ -36,10 +36,10 @@ from client import RagClient  # noqa: E402
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-# API_BASE   = "http://localhost:8000/" #local
+API_BASE   = "http://localhost:8000/" #local
 # API_BASE   = "http://13.56.109.233:8000/" #dev
 # API_BASE   = "http://54.215.128.27:8000/" #prod
-API_BASE   = "http://18.144.156.86:8000/" #prod
+# API_BASE   = "http://18.144.156.86:8000/" #prod
 # API_BASE = "http://internal-prod-269090500.us-west-1.elb.amazonaws.com/rag"
 DATASET_ID = "mvUisSWfRQx2Ap836jyIy"
 TIMEOUT    = 90.0
@@ -142,6 +142,20 @@ def extract_snippet(pdf_path: Path) -> tuple[str | None, str | None, int | None]
 
 
 # ── Individual endpoint tests ──────────────────────────────────────────────────
+
+async def test_health(client: RagClient) -> None:
+    section("0 / 10  GET /health  (should be filtered from file log)")
+    t = time.perf_counter()
+    try:
+        resp = await client._http.get(client._base + "/health")
+        elapsed = time.perf_counter() - t
+        if resp.status_code == 200:
+            passed("GET /health", f"status=200, {elapsed:.2f}s")
+        else:
+            failed("GET /health", f"status={resp.status_code}")
+    except Exception as e:
+        failed("GET /health", e)
+
 
 async def test_list_documents(client: RagClient) -> list[dict]:
     section("1 / 10  list_documents()")
@@ -380,6 +394,8 @@ async def main() -> None:
     client = RagClient(API_BASE, DATASET_ID, timeout=TIMEOUT)
 
     try:
+        await test_health(client)
+
         # 1. list_documents — must succeed; all later tests depend on it
         docs = await test_list_documents(client)
         if not docs:

@@ -13,6 +13,7 @@ import json
 import re
 
 from ..database import get_connection, now, generate_id
+from ..repositories import DatasetRepository, DocumentRepository, DependencyRepository
 from ..domain.deps import Rule, DependencySource
 from ..schemas import ApiResponse, MessageResponse
 
@@ -77,7 +78,8 @@ def _source_key(prefix: str, value: str) -> str:
     return f"{prefix}:{_normalize(value)}"
 
 
-def _load_rules_and_meta(cursor, dataset_id: str, seed_doc_ids: List[str]) -> tuple:
+def _load_rules_and_meta(dep_repo: DependencyRepository, doc_repo: DocumentRepository,
+                         dataset_id: str, seed_doc_ids: List[str]) -> tuple:
     """Load all rules and pre-fetch metadata for seed docs + all rule targets.
 
     Returns (rules_map, meta_map):
@@ -88,13 +90,10 @@ def _load_rules_and_meta(cursor, dataset_id: str, seed_doc_ids: List[str]) -> tu
     with no additional SQL queries per hop.
     """
     # Load all dependency rules for the dataset
-    cursor.execute(
-        "SELECT rule, target_doc_id FROM dependencies WHERE dataset_id = ?",
-        (dataset_id,)
-    )
+    rule_rows = dep_repo.list_rules(dataset_id)
     rules_map: dict = {}
     all_target_ids: set = set()
-    for row in cursor.fetchall():
+    for row in rule_rows:
         rule_str: str = row["rule"]
         # Normalize lender:/overlay: value; doc: IDs are kept as-is
         if rule_str.startswith("lender:"):
@@ -108,14 +107,10 @@ def _load_rules_and_meta(cursor, dataset_id: str, seed_doc_ids: List[str]) -> tu
 
     # Batch-fetch metadata for seed docs + all possible targets
     all_ids = list(set(seed_doc_ids) | all_target_ids)
-    placeholders = ",".join("?" * len(all_ids))
-    cursor.execute(
-        f"SELECT id, metadata FROM documents WHERE id IN ({placeholders}) AND dataset_id = ?",
-        (*all_ids, dataset_id)
-    )
+    meta_rows = doc_repo.list_metadata_by_ids(all_ids, dataset_id)
     meta_map: dict = {
         row["id"]: (json.loads(row["metadata"]) if row["metadata"] else {})
-        for row in cursor.fetchall()
+        for row in meta_rows
     }
     return rules_map, meta_map
 
@@ -180,29 +175,14 @@ def _resolve_transitive(seed_doc_ids: List[str], rules_map: dict, meta_map: dict
 def list_dependencies(dataset_id: str):
     """List all dependency rules for a dataset."""
     conn = get_connection()
-    cursor = conn.cursor()
+    dataset_repo = DatasetRepository(conn)
+    dep_repo = DependencyRepository(conn)
 
-    if not _dataset_exists(cursor, dataset_id):
+    if not dataset_repo.exists(dataset_id):
         conn.close()
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    cursor.execute(
-        """
-        SELECT d.id, d.dataset_id, d.rule, d.target_doc_id,
-               doc.file_name AS target_file_name,
-               doc.file_path AS target_file_path,
-               src_doc.file_path AS source_file_path,
-               d.created_at, d.updated_at
-        FROM dependencies d
-        LEFT JOIN documents doc ON doc.id = d.target_doc_id
-        LEFT JOIN documents src_doc
-            ON d.rule LIKE 'doc:%' AND src_doc.id = SUBSTR(d.rule, 5)
-        WHERE d.dataset_id = ?
-        ORDER BY d.created_at DESC
-        """,
-        (dataset_id,)
-    )
-    rows = cursor.fetchall()
+    rows = dep_repo.list_by_dataset(dataset_id)
     conn.close()
 
     items = []
@@ -234,9 +214,11 @@ def create_dependency(dataset_id: str, body: DependencyCreate):
     Validates source format (must be one of: doc:, lender:, overlay:).
     """
     conn = get_connection()
-    cursor = conn.cursor()
+    dataset_repo = DatasetRepository(conn)
+    doc_repo = DocumentRepository(conn)
+    dep_repo = DependencyRepository(conn)
 
-    if not _dataset_exists(cursor, dataset_id):
+    if not dataset_repo.exists(dataset_id):
         conn.close()
         raise HTTPException(status_code=404, detail="Dataset not found")
 
@@ -250,8 +232,7 @@ def create_dependency(dataset_id: str, body: DependencyCreate):
     # If rule is doc-level, verify the source document exists
     parsed_rule = Rule.parse(body.rule)
     if parsed_rule.protocol == DependencySource.DOC:
-        cursor.execute("SELECT id FROM documents WHERE id = ?", (parsed_rule.value,))
-        if not cursor.fetchone():
+        if not doc_repo.get(parsed_rule.value):
             conn.close()
             raise HTTPException(
                 status_code=404,
@@ -259,8 +240,7 @@ def create_dependency(dataset_id: str, body: DependencyCreate):
             )
 
     # Validate target document exists
-    cursor.execute("SELECT id, file_name FROM documents WHERE id = ?", (body.target_doc_id,))
-    target_doc = cursor.fetchone()
+    target_doc = doc_repo.get(body.target_doc_id)
     if not target_doc:
         conn.close()
         raise HTTPException(
@@ -269,25 +249,14 @@ def create_dependency(dataset_id: str, body: DependencyCreate):
         )
 
     # Check for duplicate rule + target_doc_id in this dataset
-    cursor.execute(
-        "SELECT id FROM dependencies WHERE dataset_id = ? AND rule = ? AND target_doc_id = ?",
-        (dataset_id, body.rule, body.target_doc_id)
-    )
-    if cursor.fetchone():
+    if dep_repo.get_by_rule_target(dataset_id, body.rule, body.target_doc_id):
         conn.close()
         raise HTTPException(status_code=409, detail="Dependency with this rule and target already exists")
 
     timestamp = now()
     dep_id = generate_id()
 
-    cursor.execute(
-        """
-        INSERT INTO dependencies (id, dataset_id, rule, target_doc_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (dep_id, dataset_id, body.rule, body.target_doc_id, timestamp, timestamp)
-    )
-    conn.commit()
+    dep_repo.create(dep_id, dataset_id, body.rule, body.target_doc_id, timestamp)
     conn.close()
 
     return ApiResponse(
@@ -310,18 +279,13 @@ def create_dependency(dataset_id: str, body: DependencyCreate):
 def delete_dependency(dataset_id: str, dep_id: str):
     """Delete a dependency rule by id."""
     conn = get_connection()
-    cursor = conn.cursor()
+    dep_repo = DependencyRepository(conn)
 
-    cursor.execute(
-        "SELECT id FROM dependencies WHERE id = ? AND dataset_id = ?",
-        (dep_id, dataset_id)
-    )
-    if not cursor.fetchone():
+    if not dep_repo.get(dep_id, dataset_id):
         conn.close()
         raise HTTPException(status_code=404, detail="Dependency not found")
 
-    cursor.execute("DELETE FROM dependencies WHERE id = ?", (dep_id,))
-    conn.commit()
+    dep_repo.delete(dep_id)
     conn.close()
 
     return ApiResponse(
@@ -336,19 +300,19 @@ def delete_dependency(dataset_id: str, dep_id: str):
 def get_doc_dependencies(dataset_id: str, doc_id: str):
     """Return transitive dependency doc_ids for a document, grouped by rule protocol."""
     conn = get_connection()
-    cursor = conn.cursor()
+    dataset_repo = DatasetRepository(conn)
+    doc_repo = DocumentRepository(conn)
+    dep_repo = DependencyRepository(conn)
 
-    if not _dataset_exists(cursor, dataset_id):
+    if not dataset_repo.exists(dataset_id):
         conn.close()
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    # Verify doc exists
-    cursor.execute("SELECT id FROM documents WHERE id = ? AND dataset_id = ?", (doc_id, dataset_id))
-    if not cursor.fetchone():
+    if not doc_repo.get(doc_id, dataset_id):
         conn.close()
         raise HTTPException(status_code=404, detail="Document not found")
 
-    rules_map, meta_map = _load_rules_and_meta(cursor, dataset_id, [doc_id])
+    rules_map, meta_map = _load_rules_and_meta(dep_repo, doc_repo, dataset_id, [doc_id])
     conn.close()
 
     breakdown = _resolve_transitive([doc_id], rules_map, meta_map)
@@ -365,13 +329,15 @@ def resolve_dependencies(dataset_id: str, body: BatchDependenciesRequest):
         return ApiResponse(success=True, code=200, data={})
 
     conn = get_connection()
-    cursor = conn.cursor()
+    dataset_repo = DatasetRepository(conn)
+    doc_repo = DocumentRepository(conn)
+    dep_repo = DependencyRepository(conn)
 
-    if not _dataset_exists(cursor, dataset_id):
+    if not dataset_repo.exists(dataset_id):
         conn.close()
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    rules_map, meta_map = _load_rules_and_meta(cursor, dataset_id, body.doc_ids)
+    rules_map, meta_map = _load_rules_and_meta(dep_repo, doc_repo, dataset_id, body.doc_ids)
     conn.close()
 
     result: dict = {

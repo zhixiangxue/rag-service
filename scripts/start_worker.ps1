@@ -57,6 +57,24 @@ if ($venvPath) {
 }
 
 # Run as module from rag-service directory
-Write-Host "[3/3] Starting worker (python -m worker.daemon)..." -ForegroundColor Green
+Write-Host "[3/3] Starting worker (python -m worker.main)..." -ForegroundColor Green
 Write-Host "`n========================================`n" -ForegroundColor Cyan
-python -m worker.daemon
+
+$proc = Start-Process -FilePath "python" `
+    -ArgumentList "-m", "worker.main" `
+    -NoNewWindow `
+    -PassThru
+
+Write-Host "PID: $($proc.Id)  |  Ctrl+C to stop" -ForegroundColor DarkGray
+
+try {
+    while (-not $proc.HasExited) {
+        Start-Sleep -Milliseconds 300
+    }
+} finally {
+    if (-not $proc.HasExited) {
+        Write-Host "`nShutting down (PID $($proc.Id))..." -ForegroundColor Yellow
+        taskkill /T /F /PID $proc.Id 2>&1 | Out-Null
+        Write-Host "Worker stopped." -ForegroundColor Green
+    }
+}

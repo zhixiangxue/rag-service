@@ -60,8 +60,8 @@ else
 fi
 
 # Run as module from rag-service directory
-echo "[3/3] Starting worker (python -m worker.daemon)..."
+echo "[3/3] Starting worker (python -m worker.main)..."
 echo ""
 echo "========================================"
 echo ""
-python -m worker.daemon
+python -m worker.main

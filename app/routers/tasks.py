@@ -4,6 +4,7 @@ from typing import List, Optional
 import json
 
 from ..database import get_connection, now
+from ..repositories import TaskRepository, DocumentRepository
 from ..schemas import (
     TaskResponse,
     TaskStatusUpdate,
@@ -17,6 +18,24 @@ from ..worker import later
 router = APIRouter(tags=["tasks"])
 
 
+def _row_to_task_response(row: dict) -> TaskResponse:
+    """Convert a task dict row to TaskResponse."""
+    error_message = json.loads(row["error_message"]) if row["error_message"] else None
+    return TaskResponse(
+        task_id=str(row["id"]),
+        dataset_id=str(row["dataset_id"]),
+        doc_id=str(row["doc_id"]),
+        mode=row.get("mode", "classic"),
+        reader=row.get("reader", ReaderType.DEFAULT),
+        status=row["status"],
+        progress=row["progress"],
+        error_message=error_message,
+        worker=row.get("worker"),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"]
+    )
+
+
 @router.get("/tasks", response_model=ApiResponse[List[TaskResponse]])
 def get_all_tasks(limit: int = 10, status: Optional[str] = None):
     """Get all tasks (optionally filtered by status).
@@ -26,40 +45,13 @@ def get_all_tasks(limit: int = 10, status: Optional[str] = None):
         status: Filter by task status (PENDING, PROCESSING, COMPLETED, FAILED, CANCELLED)
     """
     conn = get_connection()
-    cursor = conn.cursor()
-    
-    if status:
-        cursor.execute(
-            "SELECT * FROM tasks WHERE status = ? ORDER BY created_at DESC LIMIT ?",
-            (status, limit)
-        )
-    else:
-        cursor.execute(
-            "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?",
-            (limit,)
-        )
-    
-    rows = cursor.fetchall()
+    rows = TaskRepository(conn).list_all(status=status, limit=limit)
     conn.close()
-    
-    results = []
-    for row in rows:
-        error_message = json.loads(row["error_message"]) if row["error_message"] else None
-        results.append(TaskResponse(
-            task_id=str(row["id"]),
-            dataset_id=str(row["dataset_id"]),
-            doc_id=str(row["doc_id"]),
-            mode=row["mode"] if "mode" in row.keys() else "classic",
-            reader=row["reader"] if "reader" in row.keys() else ReaderType.DEFAULT,
-            status=row["status"],
-            progress=row["progress"],
-            error_message=error_message,
-            worker=row["worker"] if "worker" in row.keys() else None,
-            created_at=row["created_at"],
-            updated_at=row["updated_at"]
-        ))
-    
-    return ApiResponse(success=True, code=200, data=results)
+
+    return ApiResponse(
+        success=True, code=200,
+        data=[_row_to_task_response(row) for row in rows]
+    )
 
 
 @router.get("/tasks/stats", response_model=ApiResponse[dict])
@@ -72,24 +64,14 @@ def get_task_stats():
         - Progress percentage (completed / total)
     """
     conn = get_connection()
-    cursor = conn.cursor()
-    
-    # Get total count
-    cursor.execute("SELECT COUNT(*) FROM tasks")
-    total = cursor.fetchone()[0]
-    
-    # Get count by status
-    cursor.execute(
-        "SELECT status, COUNT(*) as count FROM tasks GROUP BY status"
-    )
-    status_counts = {row["status"]: row["count"] for row in cursor.fetchall()}
-    
+    repo = TaskRepository(conn)
+    total = repo.count_total()
+    status_counts = repo.count_by_status()
     conn.close()
-    
-    # Calculate progress
+
     completed = status_counts.get(TaskStatus.COMPLETED, 0)
     progress = (completed / total * 100) if total > 0 else 0
-    
+
     return ApiResponse(
         success=True,
         code=200,
@@ -115,50 +97,30 @@ def get_task_stats():
 def get_task(task_id: str):
     """Get task status by ID."""
     conn = get_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-    row = cursor.fetchone()
+    row = TaskRepository(conn).get(task_id)
     conn.close()
-    
+
     if not row:
         raise HTTPException(status_code=404, detail="Task not found")
-    
-    error_message = json.loads(row["error_message"]) if row["error_message"] else None
-    
-    data = TaskResponse(
-        task_id=str(row["id"]),
-        dataset_id=str(row["dataset_id"]),
-        doc_id=str(row["doc_id"]),
-        mode=row["mode"] if "mode" in row.keys() else "classic",
-        reader=row["reader"] if "reader" in row.keys() else ReaderType.DEFAULT,
-        status=row["status"],
-        progress=row["progress"],
-        error_message=error_message,
-        worker=row["worker"] if "worker" in row.keys() else None,
-        created_at=row["created_at"],
-        updated_at=row["updated_at"]
-    )
-    
-    return ApiResponse(success=True, code=200, data=data)
+
+    return ApiResponse(success=True, code=200, data=_row_to_task_response(row))
 
 
 @router.patch("/tasks/{task_id}", response_model=ApiResponse[TaskResponse])
 def update_task(task_id: str, update: TaskStatusUpdate):
     """Update task (status, progress, error, etc)."""
     conn = get_connection()
-    cursor = conn.cursor()
-    
-    # Check if task exists and get current status
-    cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-    row = cursor.fetchone()
+    task_repo = TaskRepository(conn)
+    doc_repo = DocumentRepository(conn)
+
+    row = task_repo.get(task_id)
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Task not found")
-    
+
     current_status = row["status"]
     doc_id = row["doc_id"]
-    
+
     # Validate status transition
     if update.status is not None and not TaskStatus.is_valid_transition(current_status, update.status):
         conn.close()
@@ -166,24 +128,19 @@ def update_task(task_id: str, update: TaskStatusUpdate):
             status_code=409,
             detail=f"Invalid status transition: {current_status} -> {update.status}"
         )
-    
-    # Build update query
-    updates = []
-    params = []
-    
+
+    # Build fields dict for task update
+    fields = {}
+
     if update.status is not None:
-        updates.append("status = ?")
-        params.append(update.status)
-        
-        # Auto-set progress to 100 for terminal states
+        fields["status"] = update.status
+
+        # Auto-set progress for terminal states
         if update.status in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
-            updates.append("progress = ?")
-            params.append(100)
+            fields["progress"] = 100
         elif update.status == TaskStatus.PROCESSING and update.progress is None:
-            # Set initial progress for PROCESSING if not provided
-            updates.append("progress = ?")
-            params.append(10)
-    
+            fields["progress"] = 10
+
     if update.progress is not None:
         # Only allow progress update for PROCESSING status
         if current_status != TaskStatus.PROCESSING and update.status != TaskStatus.PROCESSING:
@@ -192,95 +149,46 @@ def update_task(task_id: str, update: TaskStatusUpdate):
                 status_code=400,
                 detail="Progress can only be updated for tasks in PROCESSING status"
             )
-        
-        # Validate progress range
+
         if not 0 <= update.progress <= 100:
             conn.close()
             raise HTTPException(status_code=400, detail="Progress must be between 0 and 100")
-        
-        # Don't add duplicate progress update if already added for terminal state
+
+        # Don't overwrite terminal-state progress already set above
         if update.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
-            updates.append("progress = ?")
-            params.append(update.progress)
-    
+            fields["progress"] = update.progress
+
     if update.error_message is not None:
-        updates.append("error_message = ?")
-        params.append(json.dumps(update.error_message))
+        fields["error_message"] = json.dumps(update.error_message)
 
     if update.worker is not None:
-        updates.append("worker = ?")
-        params.append(update.worker)
-    
+        fields["worker"] = update.worker
+
     if update.unit_count is not None:
-        # Update document's unit_count
-        cursor.execute(
-            "UPDATE documents SET unit_count = ? WHERE id = ?",
-            (update.unit_count, doc_id)
-        )
-    
-    if not updates:
+        doc_repo.update_unit_count(doc_id, update.unit_count)
+
+    if not fields:
         conn.close()
         raise HTTPException(status_code=400, detail="No fields to update")
-    
+
     timestamp = now()
-    updates.append("updated_at = ?")
-    params.append(timestamp)
-    params.append(task_id)
-    
-    cursor.execute(
-        f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?",
-        params
-    )
-    conn.commit()
-    
-    # Update document status based on task status
+    task_repo.update(task_id, fields, timestamp)
+
+    # Sync document status with task status
     if update.status == TaskStatus.COMPLETED:
-        cursor.execute(
-            "UPDATE documents SET status = ?, updated_at = ? WHERE id = ?",
-            (DocumentStatus.COMPLETED, timestamp, doc_id)
-        )
-        conn.commit()
+        doc_repo.update_status(doc_id, DocumentStatus.COMPLETED, timestamp)
     elif update.status == TaskStatus.FAILED:
-        cursor.execute(
-            "UPDATE documents SET status = ?, updated_at = ? WHERE id = ?",
-            (DocumentStatus.FAILED, timestamp, doc_id)
-        )
-        conn.commit()
+        doc_repo.update_status(doc_id, DocumentStatus.FAILED, timestamp)
     elif update.status == TaskStatus.CANCELLED:
-        cursor.execute(
-            "UPDATE documents SET status = ?, updated_at = ? WHERE id = ?",
-            (DocumentStatus.FAILED, timestamp, doc_id)
-        )
-        conn.commit()
+        doc_repo.update_status(doc_id, DocumentStatus.FAILED, timestamp)
     elif update.status == TaskStatus.PROCESSING:
-        cursor.execute(
-            "UPDATE documents SET status = ?, updated_at = ? WHERE id = ?",
-            (DocumentStatus.PROCESSING, timestamp, doc_id)
-        )
-        conn.commit()
-    
-    # Fetch updated task
-    cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-    row = cursor.fetchone()
+        doc_repo.update_status(doc_id, DocumentStatus.PROCESSING, timestamp)
+
+    row = task_repo.get(task_id)
     conn.close()
-    
-    error_message = json.loads(row["error_message"]) if row["error_message"] else None
-    
-    data = TaskResponse(
-        task_id=str(row["id"]),
-        dataset_id=str(row["dataset_id"]),
-        doc_id=str(row["doc_id"]),
-        mode=row["mode"] if "mode" in row.keys() else "classic",
-        reader=row["reader"] if "reader" in row.keys() else ReaderType.DEFAULT,
-        status=row["status"],
-        progress=row["progress"],
-        error_message=error_message,
-        worker=row["worker"] if "worker" in row.keys() else None,
-        created_at=row["created_at"],
-        updated_at=row["updated_at"]
-    )
-    
-    return ApiResponse(success=True, code=200, message="Task updated successfully", data=data)
+
+    return ApiResponse(success=True, code=200, message="Task updated successfully",
+                       data=_row_to_task_response(row))
 
 
 @router.post("/tasks/{task_id}/retry", response_model=ApiResponse[MessageResponse])
@@ -291,18 +199,17 @@ def retry_task(task_id: str):
     The task will be reset to PENDING status and picked up by workers again.
     """
     conn = get_connection()
-    cursor = conn.cursor()
-    
-    # Check if task exists
-    cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-    row = cursor.fetchone()
+    task_repo = TaskRepository(conn)
+    doc_repo = DocumentRepository(conn)
+
+    row = task_repo.get(task_id)
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Task not found")
-    
+
     current_status = row["status"]
     doc_id = row["doc_id"]
-    
+
     # Only allow retry for terminal states
     if current_status not in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
         conn.close()
@@ -310,22 +217,10 @@ def retry_task(task_id: str):
             status_code=400,
             detail=f"Cannot retry task in {current_status} status. Only terminal states (COMPLETED/FAILED/CANCELLED) can be retried."
         )
-    
+
     timestamp = now()
-    
-    # Reset task to PENDING
-    cursor.execute(
-        "UPDATE tasks SET status = ?, progress = ?, error_message = NULL, updated_at = ? WHERE id = ?",
-        (TaskStatus.PENDING, 0, timestamp, task_id)
-    )
-    conn.commit()
-    
-    # Reset document status to PROCESSING
-    cursor.execute(
-        "UPDATE documents SET status = ?, updated_at = ? WHERE id = ?",
-        (DocumentStatus.PROCESSING, timestamp, doc_id)
-    )
-    conn.commit()
+    task_repo.reset(task_id, timestamp)
+    doc_repo.update_status(doc_id, DocumentStatus.PROCESSING, timestamp)
     conn.close()
 
     # Re-enqueue to Dramatiq so the worker picks it up immediately
@@ -347,18 +242,17 @@ def cancel_task(task_id: str):
     The task will be marked as CANCELLED and workers will stop processing it.
     """
     conn = get_connection()
-    cursor = conn.cursor()
-    
-    # Check if task exists
-    cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-    row = cursor.fetchone()
+    task_repo = TaskRepository(conn)
+    doc_repo = DocumentRepository(conn)
+
+    row = task_repo.get(task_id)
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Task not found")
-    
+
     current_status = row["status"]
     doc_id = row["doc_id"]
-    
+
     # Only allow cancelling non-terminal states
     if current_status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
         conn.close()
@@ -366,24 +260,12 @@ def cancel_task(task_id: str):
             status_code=400,
             detail=f"Cannot cancel task in {current_status} status. Task is already in terminal state."
         )
-    
+
     timestamp = now()
-    
-    # Update task status to CANCELLED
-    cursor.execute(
-        "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
-        (TaskStatus.CANCELLED, timestamp, task_id)
-    )
-    conn.commit()
-    
-    # Update document status to FAILED (cancelled task treated as failed)
-    cursor.execute(
-        "UPDATE documents SET status = ?, updated_at = ? WHERE id = ?",
-        (DocumentStatus.FAILED, timestamp, doc_id)
-    )
-    conn.commit()
+    task_repo.cancel(task_id, timestamp)
+    doc_repo.update_status(doc_id, DocumentStatus.FAILED, timestamp)
     conn.close()
-    
+
     return ApiResponse(
         success=True,
         code=200,

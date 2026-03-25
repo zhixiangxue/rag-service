@@ -46,7 +46,9 @@ def require_env(key: str, default_value: str = None) -> str:
 # ============================================
 # Database Configuration
 # ============================================
-DATABASE_PATH = require_env("DATABASE_PATH")
+# SQLite:  sqlite:///./rag_service.db
+# rqlite:  http://host:4001  or  https://host:4001
+DATABASE_URI = require_env("DATABASE_URI")
 
 # ============================================
 # Vector Store Configuration

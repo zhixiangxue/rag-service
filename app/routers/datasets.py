@@ -4,6 +4,7 @@ from typing import Dict, List
 import json
 
 from ..database import get_connection, now, generate_id
+from ..repositories import DatasetRepository, DocumentRepository, TaskRepository
 from ..schemas import (
     DatasetCreate,
     DatasetUpdate,
@@ -18,14 +19,9 @@ router = APIRouter(prefix="/datasets", tags=["datasets"])
 
 
 def _build_catalog_from_db(dataset_id: str) -> Dict[str, Dict[str, str]]:
-    """Build lender → {doc_id: file_name} catalog directly from SQLite documents table."""
+    """Build lender → {doc_id: file_name} catalog directly from the documents table."""
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT id, file_name, metadata FROM documents WHERE dataset_id = ?",
-        (dataset_id,)
-    )
-    rows = cursor.fetchall()
+    rows = DocumentRepository(conn).list_for_catalog(dataset_id)
     conn.close()
 
     catalog: Dict[str, Dict[str, str]] = {}
@@ -68,17 +64,14 @@ def create_dataset(dataset: DatasetCreate):
     from .. import config
     
     conn = get_connection()
-    cursor = conn.cursor()
-    
-    # Check if dataset with same name already exists
-    cursor.execute("SELECT * FROM datasets WHERE name = ?", (dataset.name,))
-    existing_row = cursor.fetchone()
-    
+    repo = DatasetRepository(conn)
+
+    existing_row = repo.get_by_name(dataset.name)
+
     if existing_row:
-        # Dataset exists in DB - ensure vector collection exists
         conn.close()
         _ensure_vector_collection(dataset.name, dataset.engine)
-        
+
         config_data = json.loads(existing_row["config"]) if existing_row["config"] else None
         data = DatasetResponse(
             dataset_id=str(existing_row["id"]),
@@ -91,39 +84,28 @@ def create_dataset(dataset: DatasetCreate):
             updated_at=existing_row["updated_at"]
         )
         return ApiResponse(success=True, code=200, message="Dataset already exists", data=data)
-    
-    # Create new dataset in DB
+
     timestamp = now()
     config_json = json.dumps(dataset.config) if dataset.config else None
     dataset_id = generate_id()
-    
+
     try:
-        cursor.execute(
-            """
-            INSERT INTO datasets (id, name, description, engine, config, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (dataset_id, dataset.name, dataset.description, dataset.engine, config_json, timestamp, timestamp)
-        )
-        conn.commit()
+        repo.create(dataset_id, dataset.name, dataset.description, dataset.engine, config_json, timestamp)
     except Exception as e:
         conn.close()
         raise HTTPException(status_code=500, detail=f"Failed to create dataset: {str(e)}")
-    
+
     conn.close()
-    
-    # Ensure vector collection exists (create if not exists)
+
     try:
         _ensure_vector_collection(dataset.name, dataset.engine)
     except Exception as e:
-        # Rollback database if vector store creation fails
+        # Compensating delete if vector store creation fails
         conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM datasets WHERE id = ?", (dataset_id,))
-        conn.commit()
+        DatasetRepository(conn).delete(dataset_id)
         conn.close()
         raise HTTPException(status_code=500, detail=f"Failed to create vector collection: {str(e)}")
-    
+
     data = DatasetResponse(
         dataset_id=str(dataset_id),
         collection_name=dataset.name,
@@ -134,7 +116,7 @@ def create_dataset(dataset: DatasetCreate):
         created_at=timestamp,
         updated_at=timestamp
     )
-    
+
     return ApiResponse(success=True, code=200, message="Dataset created successfully", data=data)
 
 
@@ -175,12 +157,9 @@ def _ensure_vector_collection(collection_name: str, engine: str):
 def list_datasets():
     """List all datasets."""
     conn = get_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT * FROM datasets ORDER BY created_at DESC")
-    rows = cursor.fetchall()
+    rows = DatasetRepository(conn).list_all()
     conn.close()
-    
+
     results = []
     for row in rows:
         config = json.loads(row["config"]) if row["config"] else None
@@ -194,7 +173,7 @@ def list_datasets():
             created_at=row["created_at"],
             updated_at=row["updated_at"]
         ))
-    
+
     return ApiResponse(success=True, code=200, data=results)
 
 
@@ -202,17 +181,14 @@ def list_datasets():
 def get_dataset(dataset_id: str):
     """Get dataset by ID."""
     conn = get_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
-    row = cursor.fetchone()
+    row = DatasetRepository(conn).get(dataset_id)
     conn.close()
-    
+
     if not row:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    
+
     config = json.loads(row["config"]) if row["config"] else None
-    
+
     data = DatasetResponse(
         dataset_id=str(row["id"]),
         collection_name=row["name"],
@@ -223,7 +199,7 @@ def get_dataset(dataset_id: str):
         created_at=row["created_at"],
         updated_at=row["updated_at"]
     )
-    
+
     return ApiResponse(success=True, code=200, data=data)
 
 
@@ -231,21 +207,16 @@ def get_dataset(dataset_id: str):
 def list_dataset_tasks(dataset_id: str):
     """Get all tasks for a specific dataset."""
     conn = get_connection()
-    cursor = conn.cursor()
-    
-    # Check if dataset exists
-    cursor.execute("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
-    if not cursor.fetchone():
+    repo = DatasetRepository(conn)
+    task_repo = TaskRepository(conn)
+
+    if not repo.exists(dataset_id):
         conn.close()
         raise HTTPException(status_code=404, detail="Dataset not found")
-    
-    cursor.execute(
-        "SELECT * FROM tasks WHERE dataset_id = ? ORDER BY created_at DESC",
-        (dataset_id,)
-    )
-    rows = cursor.fetchall()
+
+    rows = task_repo.list_by_dataset(dataset_id)
     conn.close()
-    
+
     results = []
     for row in rows:
         error_message = json.loads(row["error_message"]) if row["error_message"] else None
@@ -253,14 +224,14 @@ def list_dataset_tasks(dataset_id: str):
             task_id=str(row["id"]),
             dataset_id=str(row["dataset_id"]),
             doc_id=str(row["doc_id"]),
-            mode=row["mode"] if "mode" in row.keys() else "classic",
+            mode=row.get("mode", "classic"),
             status=row["status"],
             progress=row["progress"],
             error_message=error_message,
             created_at=row["created_at"],
             updated_at=row["updated_at"]
         ))
-    
+
     return ApiResponse(success=True, code=200, data=results)
 
 
@@ -268,7 +239,7 @@ def list_dataset_tasks(dataset_id: str):
 def get_dataset_catalog(dataset_id: str):
     """Return a lender → {doc_id: file_name} catalog for the dataset.
 
-    Reads directly from the SQLite documents table. Response shape:
+    Reads directly from the documents table. Response shape:
         {
             "JMAC Lending": {
                 "abc123": "DSCR_Prime_v2.pdf",
@@ -279,11 +250,8 @@ def get_dataset_catalog(dataset_id: str):
             }
         }
     """
-    # Verify dataset exists
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM datasets WHERE id = ?", (dataset_id,))
-    if not cursor.fetchone():
+    if not DatasetRepository(conn).exists(dataset_id):
         conn.close()
         raise HTTPException(status_code=404, detail="Dataset not found")
     conn.close()
@@ -300,59 +268,37 @@ def get_dataset_catalog(dataset_id: str):
 def update_dataset(dataset_id: str, dataset: DatasetUpdate):
     """Update dataset."""
     conn = get_connection()
-    cursor = conn.cursor()
-    
-    # Check if dataset exists
-    cursor.execute("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
-    if not cursor.fetchone():
+    repo = DatasetRepository(conn)
+
+    if not repo.exists(dataset_id):
         conn.close()
         raise HTTPException(status_code=404, detail="Dataset not found")
-    
-    # Build update query
-    updates = []
-    params = []
-    
+
+    fields = {}
     if dataset.name is not None:
-        updates.append("name = ?")
-        params.append(dataset.name)
-    
+        fields["name"] = dataset.name
     if dataset.description is not None:
-        updates.append("description = ?")
-        params.append(dataset.description)
-    
+        fields["description"] = dataset.description
     if dataset.engine is not None:
-        updates.append("engine = ?")
-        params.append(dataset.engine)
-    
+        fields["engine"] = dataset.engine
     if dataset.config is not None:
-        updates.append("config = ?")
-        params.append(json.dumps(dataset.config))
-    
-    if not updates:
+        fields["config"] = json.dumps(dataset.config)
+
+    if not fields:
         conn.close()
         raise HTTPException(status_code=400, detail="No fields to update")
-    
+
     timestamp = now()
-    updates.append("updated_at = ?")
-    params.append(timestamp)
-    params.append(dataset_id)
-    
-    cursor.execute(
-        f"UPDATE datasets SET {', '.join(updates)} WHERE id = ?",
-        params
-    )
-    conn.commit()
-    
+    repo.update(dataset_id, fields, timestamp)
+
     # Invalidate query cache
     _invalidate_query_cache(dataset_id)
 
-    # Fetch updated dataset
-    cursor.execute("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
-    row = cursor.fetchone()
+    row = repo.get(dataset_id)
     conn.close()
-    
+
     config = json.loads(row["config"]) if row["config"] else None
-    
+
     data = DatasetResponse(
         dataset_id=str(row["id"]),
         collection_name=row["name"],
@@ -363,7 +309,7 @@ def update_dataset(dataset_id: str, dataset: DatasetUpdate):
         created_at=row["created_at"],
         updated_at=row["updated_at"]
     )
-    
+
     return ApiResponse(success=True, code=200, message="Dataset updated successfully", data=data)
 
 
@@ -373,22 +319,18 @@ def delete_dataset(dataset_id: str):
     from zag.storages.vector import QdrantVectorStore
     from zag.embedders import Embedder
     from .. import config
-    
+
     conn = get_connection()
-    cursor = conn.cursor()
-    
-    # Check if dataset exists and get collection name
-    cursor.execute("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
-    row = cursor.fetchone()
+    repo = DatasetRepository(conn)
+
+    row = repo.get(dataset_id)
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Dataset not found")
-    
+
     collection_name = row["name"]
-    
-    # Delete from database
-    cursor.execute("DELETE FROM datasets WHERE id = ?", (dataset_id,))
-    conn.commit()
+
+    repo.delete(dataset_id)
     conn.close()
     
     # Delete vector store collection
