@@ -4,7 +4,7 @@ import time
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
@@ -62,11 +62,22 @@ logging.getLogger("rag").setLevel(getattr(logging, _log_level, logging.INFO))
 logger = logging.getLogger("rag.main")
 
 
+def verify_api_key(x_api_key: str = Header(default="")) -> None:
+    """Validate X-Api-Key header. Skipped when ACCESS_KEY env var is empty."""
+    if not config.ACCESS_KEY:
+        return
+    if x_api_key != config.ACCESS_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+
 # Create FastAPI app
+_dev_mode = os.getenv("DEV_MODE", "false").lower() == "true"
 app = FastAPI(
     title="RAG Service",
     description="RAG service layer built on top of Zag framework",
-    version="0.1.0",
+    version="0.2.0",
+    docs_url="/docs" if _dev_mode else None,
+    redoc_url="/redoc" if _dev_mode else None,
 )
 
 # CORS middleware
@@ -108,15 +119,16 @@ else:
 
 # Register routers
 app.include_router(health.router)
-app.include_router(datasets.router)
-app.include_router(documents.router)
-app.include_router(tasks.router)
-app.include_router(query.router)
-app.include_router(units.router)
-app.include_router(demo.router)
-app.include_router(graph.router)
-app.include_router(dependencies.router)
-app.include_router(utility.router)
+_auth = [Depends(verify_api_key)]
+app.include_router(datasets.router,    dependencies=_auth)
+app.include_router(documents.router,   dependencies=_auth)
+app.include_router(tasks.router,       dependencies=_auth)
+app.include_router(query.router,       dependencies=_auth)
+app.include_router(units.router,       dependencies=_auth)
+app.include_router(demo.router,        dependencies=_auth)
+app.include_router(graph.router,       dependencies=_auth)
+app.include_router(dependencies.router, dependencies=_auth)
+app.include_router(utility.router,     dependencies=_auth)
 
 
 @app.get("/")

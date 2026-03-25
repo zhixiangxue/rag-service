@@ -125,6 +125,9 @@ LOCATE_CACHE_DIR = os.getenv("LOCATE_CACHE_DIR", str(Path.home() / ".zag" / "cac
 API_HOST = require_env("API_HOST")
 API_PORT = int(require_env("API_PORT"))
 
+# Service-level access key (empty = no auth)
+ACCESS_KEY = os.getenv("ACCESS_KEY", "")
+
 # Public-facing host for file URLs (used by distributed workers)
 # If not set, defaults to API_HOST (unless API_HOST is 0.0.0.0, then uses localhost)
 API_PUBLIC_HOST = os.getenv("API_PUBLIC_HOST") or (

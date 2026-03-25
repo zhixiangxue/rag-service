@@ -27,12 +27,13 @@ class RagClient:
         timeout:    Default request timeout in seconds.
     """
 
-    def __init__(self, base_url: str, dataset_id: str, timeout: float = 30.0) -> None:
+    def __init__(self, base_url: str, dataset_id: str, timeout: float = 30.0, access_key: str = "") -> None:
         self._base = base_url.rstrip("/")
         self._dataset_id = dataset_id
         # trust_env=False: ignore system HTTP_PROXY/HTTPS_PROXY so localhost
         # requests are not routed through a system proxy.
-        self._http = httpx.AsyncClient(timeout=timeout, trust_env=False)
+        _headers = {"X-Api-Key": access_key} if access_key else {}
+        self._http = httpx.AsyncClient(timeout=timeout, trust_env=False, headers=_headers)
 
     # ── Convenience read-only properties ──────────────────────────────────────
 

@@ -56,8 +56,10 @@ API_PORT = int(require_env("API_PORT", "8000"))
 _worker_api_host = "localhost" if API_HOST == "0.0.0.0" else API_HOST
 API_BASE_URL = f"http://{_worker_api_host}:{API_PORT}"
 
-WORKER_POLL_INTERVAL = int(require_env("WORKER_POLL_INTERVAL", "5"))  # seconds
-WORKER_MAX_RETRIES = int(require_env("WORKER_MAX_RETRIES", "3"))
+# Service-level access key (must match app's ACCESS_KEY; empty = no auth)
+ACCESS_KEY = os.getenv("ACCESS_KEY", "")
+# Pre-built headers dict for all httpx calls to the app
+API_HEADERS: dict = {"X-Api-Key": ACCESS_KEY} if ACCESS_KEY else {}
 
 # ============================================
 # Full-Text Search Configuration
@@ -99,9 +101,6 @@ RERANKER_PROVIDER = os.getenv("RERANKER_PROVIDER", "cohere")  # cohere, sentence
 # PDF Processing
 MAX_PAGES_PER_PART = int(require_env("MAX_PAGES_PER_PART", "100"))
 
-# Reader Configuration
-DOCUMENT_READER = require_env("DOCUMENT_READER", "docling")  # docling, markitdown, mineru
-
 # Processing Settings (used in document_processor.py)
 USE_GPU = require_env("USE_GPU", "true").lower() == "true"
 NUM_THREADS = int(require_env("NUM_THREADS", "8"))
@@ -129,11 +128,6 @@ FALKORDB_PORT = int(require_env("FALKORDB_PORT", "6379"))
 # ============================================
 REDIS_HOST = require_env("REDIS_HOST", "localhost")
 REDIS_PORT = int(require_env("REDIS_PORT", "6380"))
-
-# ============================================
-# HuggingFace Configuration
-# ============================================
-HF_ENDPOINT = require_env("HF_ENDPOINT", "https://hf-mirror.com")
 
 # ============================================
 # AWS S3 Configuration (used by task_processor to download S3-hosted files)

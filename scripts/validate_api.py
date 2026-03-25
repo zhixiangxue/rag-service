@@ -43,6 +43,7 @@ API_BASE   = "http://localhost:8000/" #local
 # API_BASE = "http://internal-prod-269090500.us-west-1.elb.amazonaws.com/rag"
 DATASET_ID = "mvUisSWfRQx2Ap836jyIy"
 TIMEOUT    = 90.0
+ACCESS_KEY = "ak-9e8144461906fcc952eb0f317b3d7dd79ee9b0056feca9a4"
 
 # Local PDF cache written by bench_locate.py and the worker
 PDFS_DIR   = Path(r"C:\Users\xue\.zag\cache\pdfs")
@@ -391,7 +392,7 @@ async def main() -> None:
     print(f"  Dataset : {DATASET_ID}")
     print("=" * 64)
 
-    client = RagClient(API_BASE, DATASET_ID, timeout=TIMEOUT)
+    client = RagClient(API_BASE, DATASET_ID, timeout=TIMEOUT, access_key=ACCESS_KEY)
 
     try:
         await test_health(client)

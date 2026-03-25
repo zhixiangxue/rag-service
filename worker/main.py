@@ -120,7 +120,7 @@ def _log_task_result(
 def _fetch_task(task_id: str) -> dict:
     """GET /tasks/{task_id} — returns parsed data dict. Raises on error."""
     url = f"{config.API_BASE_URL}/tasks/{task_id}"
-    resp = httpx.get(url, timeout=30.0)
+    resp = httpx.get(url, headers=config.API_HEADERS, timeout=30.0)
     resp.raise_for_status()
     return resp.json()["data"]
 
@@ -129,7 +129,7 @@ def _fetch_doc_metadata(dataset_id: str, doc_id: str) -> Optional[dict]:
     """GET /datasets/{dataset_id}/documents/{doc_id} — returns metadata dict or None."""
     try:
         url = f"{config.API_BASE_URL}/datasets/{dataset_id}/documents/{doc_id}"
-        resp = httpx.get(url, timeout=30.0)
+        resp = httpx.get(url, headers=config.API_HEADERS, timeout=30.0)
         resp.raise_for_status()
         return resp.json()["data"].get("metadata")
     except Exception as e:
@@ -144,7 +144,7 @@ def _patch_task_status(task_id: str, status: str, worker: str = None):
         body = {"status": status}
         if worker is not None:
             body["worker"] = worker
-        httpx.patch(url, json=body, timeout=30.0)
+        httpx.patch(url, json=body, headers=config.API_HEADERS, timeout=30.0)
     except Exception as e:
         console.print(f"[yellow]Failed to patch task status: {e}[/yellow]")
 

@@ -68,7 +68,7 @@ async def upload_cache_to_api(
         async with httpx.AsyncClient(timeout=120.0) as client:
             with open(temp_file, "rb") as f:
                 files = {"file": (f"{doc_id}.tar.gz", f, "application/gzip")}
-                response = await client.post(url, files=files)
+                response = await client.post(url, files=files, headers=config.API_HEADERS)
         
         if response.status_code == 200:
             data = response.json().get("data", {})
@@ -110,7 +110,8 @@ async def update_task_status(
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.patch(
                 f"{api_base_url}/tasks/{task_id}",
-                json=payload
+                json=payload,
+                headers=config.API_HEADERS,
             )
             response.raise_for_status()
             result = response.json()
@@ -125,7 +126,8 @@ async def get_document_info(api_base_url: str, dataset_id: str, doc_id: str) -> 
     """Get document information from API."""
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
-            f"{api_base_url}/datasets/{dataset_id}/documents/{doc_id}"
+            f"{api_base_url}/datasets/{dataset_id}/documents/{doc_id}",
+            headers=config.API_HEADERS,
         )
         response.raise_for_status()
         return response.json()["data"]
