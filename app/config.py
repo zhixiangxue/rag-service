@@ -128,3 +128,9 @@ API_PORT = int(require_env("API_PORT"))
 API_PUBLIC_HOST = os.getenv("API_PUBLIC_HOST") or (
     "localhost" if API_HOST == "0.0.0.0" else API_HOST
 )
+
+# ============================================
+# Redis / Dramatiq Configuration
+# ============================================
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6380"))

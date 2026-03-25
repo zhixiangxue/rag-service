@@ -125,6 +125,12 @@ FALKORDB_HOST = require_env("FALKORDB_HOST", "localhost")
 FALKORDB_PORT = int(require_env("FALKORDB_PORT", "6379"))
 
 # ============================================
+# Redis / Dramatiq Configuration
+# ============================================
+REDIS_HOST = require_env("REDIS_HOST", "localhost")
+REDIS_PORT = int(require_env("REDIS_PORT", "6380"))
+
+# ============================================
 # HuggingFace Configuration
 # ============================================
 HF_ENDPOINT = require_env("HF_ENDPOINT", "https://hf-mirror.com")

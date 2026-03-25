@@ -106,12 +106,20 @@ def init_db():
             status TEXT NOT NULL,
             progress INTEGER DEFAULT 0,
             error_message TEXT,
+            worker TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (dataset_id) REFERENCES datasets(id),
             FOREIGN KEY (doc_id) REFERENCES documents(id)
         )
     """)
+
+    # Migration: add worker_id to existing tables that were created before this column existed
+    try:
+        cursor.execute("ALTER TABLE tasks ADD COLUMN worker TEXT")
+        conn.commit()
+    except Exception:
+        pass  # Column already exists, ignore
 
     # Dependencies table - rules for auto-expanding doc_ids during retrieval
     cursor.execute("""

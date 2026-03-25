@@ -98,6 +98,7 @@ class TaskResponse(BaseModel):
     progress: int  # 0-100
     metadata: Optional[Dict[str, Any]] = None  # Document metadata from upload
     error_message: Optional[Dict[str, Any]] = None
+    worker: Optional[str] = None  # hostname (ip) of the worker that processed this task
     created_at: str
     updated_at: str
 
@@ -108,6 +109,7 @@ class TaskStatusUpdate(BaseModel):
     progress: Optional[int] = None
     error_message: Optional[Dict[str, Any]] = None
     unit_count: Optional[int] = None
+    worker: Optional[str] = None  # set by worker when starting PROCESSING
 
 # ============ Unit ============
 

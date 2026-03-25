@@ -29,6 +29,7 @@ from ..schemas import (
 from ..storage import get_storage
 from ..constants import TaskStatus, DocumentStatus
 from .. import config
+from ..worker import later
 
 router = APIRouter(prefix="/datasets/{dataset_id}/documents", tags=["documents"])
 
@@ -582,6 +583,9 @@ async def create_task(
     conn.commit()
     conn.close()
     
+    # Enqueue task to Dramatiq worker
+    later.process_document(task_id)
+
     return ApiResponse(
         success=True,
         code=200,

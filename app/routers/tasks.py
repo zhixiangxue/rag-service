@@ -2,7 +2,6 @@
 from fastapi import APIRouter, HTTPException
 from typing import List, Optional
 import json
-import threading
 
 from ..database import get_connection, now
 from ..schemas import (
@@ -13,16 +12,9 @@ from ..schemas import (
     ReaderType
 )
 from ..constants import TaskStatus, DocumentStatus
+from ..worker import later
 
 router = APIRouter(tags=["tasks"])
-
-# Global lock for task claiming (application-level lock)
-# TODO ⚠️ Performance note: This is a global lock that serializes all claim requests.
-# For current scale (10-20 workers), this is acceptable since claim overhead (~10-50ms) 
-# is negligible compared to task processing time (minutes). 
-# Future optimization: Use database-level row locking (PostgreSQL FOR UPDATE SKIP LOCKED) 
-# for true parallel claiming when scaling to 100+ workers.
-_task_claim_lock = threading.Lock()
 
 
 @router.get("/tasks", response_model=ApiResponse[List[TaskResponse]])
@@ -62,103 +54,12 @@ def get_all_tasks(limit: int = 10, status: Optional[str] = None):
             status=row["status"],
             progress=row["progress"],
             error_message=error_message,
+            worker=row["worker"] if "worker" in row.keys() else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"]
         ))
     
     return ApiResponse(success=True, code=200, data=results)
-
-
-@router.post("/tasks/claim", response_model=ApiResponse[TaskResponse])
-async def claim_task():
-    """Atomically claim a pending task (for worker).
-    
-    This endpoint uses application-level locking to ensure only one worker 
-    can claim each task, preventing race conditions. Returns 404 if no pending 
-    tasks are available.
-    
-    Thread-safe and database-agnostic.
-    """
-    import asyncio
-
-    def _do_claim():
-        # Acquire global lock to prevent race conditions
-        with _task_claim_lock:
-            conn = get_connection()
-            cursor = conn.cursor()
-            
-            try:
-                # Find first pending task
-                cursor.execute(
-                    """
-                    SELECT t.id, t.dataset_id, t.doc_id, t.mode, t.reader, t.created_at, d.metadata as doc_metadata
-                    FROM tasks t
-                    JOIN documents d ON t.doc_id = d.id
-                    WHERE t.status = ? 
-                    ORDER BY t.created_at ASC 
-                    LIMIT 1
-                    """,
-                    (TaskStatus.PENDING,)
-                )
-                row = cursor.fetchone()
-                
-                if not row:
-                    conn.close()
-                    return None  # signal: no pending tasks
-                
-                task_id = row["id"]
-                dataset_id = row["dataset_id"]
-                doc_id = row["doc_id"]
-                mode = row["mode"] if row["mode"] else "classic"
-                created_at = row["created_at"]
-                metadata = json.loads(row["doc_metadata"]) if row["doc_metadata"] else None
-                
-                timestamp = now()
-                
-                # Update task status to PROCESSING
-                cursor.execute(
-                    "UPDATE tasks SET status = ?, progress = 0, updated_at = ? WHERE id = ?",
-                    (TaskStatus.PROCESSING, timestamp, task_id)
-                )
-                conn.commit()
-                
-                # Update document status to PROCESSING
-                cursor.execute(
-                    "UPDATE documents SET status = ?, updated_at = ? WHERE id = ?",
-                    (DocumentStatus.PROCESSING, timestamp, doc_id)
-                )
-                conn.commit()
-                conn.close()
-                
-                reader = row["reader"] if "reader" in row.keys() and row["reader"] else ReaderType.DEFAULT
-
-                return TaskResponse(
-                    task_id=str(task_id),
-                    dataset_id=str(dataset_id),
-                    doc_id=str(doc_id),
-                    mode=mode,
-                    reader=reader,
-                    status=TaskStatus.PROCESSING,
-                    progress=0,
-                    metadata=metadata,
-                    error_message=None,
-                    created_at=created_at,
-                    updated_at=timestamp
-                )
-                
-            except Exception as e:
-                conn.close()
-                raise RuntimeError(f"Failed to claim task: {str(e)}")
-
-    try:
-        data = await asyncio.to_thread(_do_claim)
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    if data is None:
-        raise HTTPException(status_code=404, detail="No pending tasks available")
-
-    return ApiResponse(success=True, code=200, message="Task claimed successfully", data=data)
 
 
 @router.get("/tasks/stats", response_model=ApiResponse[dict])
@@ -234,6 +135,7 @@ def get_task(task_id: str):
         status=row["status"],
         progress=row["progress"],
         error_message=error_message,
+        worker=row["worker"] if "worker" in row.keys() else None,
         created_at=row["created_at"],
         updated_at=row["updated_at"]
     )
@@ -304,6 +206,10 @@ def update_task(task_id: str, update: TaskStatusUpdate):
     if update.error_message is not None:
         updates.append("error_message = ?")
         params.append(json.dumps(update.error_message))
+
+    if update.worker is not None:
+        updates.append("worker = ?")
+        params.append(update.worker)
     
     if update.unit_count is not None:
         # Update document's unit_count
@@ -369,6 +275,7 @@ def update_task(task_id: str, update: TaskStatusUpdate):
         status=row["status"],
         progress=row["progress"],
         error_message=error_message,
+        worker=row["worker"] if "worker" in row.keys() else None,
         created_at=row["created_at"],
         updated_at=row["updated_at"]
     )
@@ -420,7 +327,10 @@ def retry_task(task_id: str):
     )
     conn.commit()
     conn.close()
-    
+
+    # Re-enqueue to Dramatiq so the worker picks it up immediately
+    later.process_document(task_id)
+
     return ApiResponse(
         success=True,
         code=200,
