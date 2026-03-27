@@ -130,7 +130,7 @@ install_meilisearch() {
 
     local url="https://github.com/meilisearch/meilisearch/releases/download/${MEILISEARCH_VERSION}/meilisearch-linux-${arch}"
     local dest="${ZAG_DIR}/meilisearch"
-    mkdir -p "$dest/data"
+    mkdir -p "$dest/data" "$dest/dumps" "$dest/snapshots"
 
     # Single binary, no archive to extract
     wget -qO "$dest/meilisearch" "$url"
@@ -152,8 +152,11 @@ After=network.target
 [Service]
 Type=simple
 User=${CURRENT_USER}
+WorkingDirectory=${dest}
 Environment="MEILI_DB_PATH=${dest}/data"
 Environment="MEILI_HTTP_ADDR=0.0.0.0:${MEILISEARCH_PORT}"
+Environment="MEILI_DUMP_DIR=${dest}/dumps"
+Environment="MEILI_SNAPSHOT_DIR=${dest}/snapshots"
 $([ -n "$master_key" ] && echo "Environment=\"MEILI_MASTER_KEY=${master_key}\"")
 ExecStart=${dest}/meilisearch
 Restart=on-failure
