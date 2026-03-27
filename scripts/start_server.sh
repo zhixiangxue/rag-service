@@ -94,7 +94,22 @@ WORKERS="${WORKERS:-$DEFAULT_WORKERS}"
 
 echo "[3/4] Workers: $WORKERS (cores: $(nproc))"
 
-# Run with gunicorn + UvicornWorker
+# Pre-flight: check all dependencies before starting gunicorn
+# Runs once in the shell process — failure aborts startup cleanly
+echo "[preflight] Checking dependencies..."
+python3 -c "
+import sys, os
+os.chdir('$RAG_SERVICE_DIR')
+sys.path.insert(0, '$RAG_SERVICE_DIR')
+from app.main import check_dependencies
+sys.exit(0 if check_dependencies() else 1)
+"
+if [ $? -ne 0 ]; then
+    echo "[preflight] Dependency check failed. Aborting startup."
+    exit 1
+fi
+echo ""
+
 # - Supports graceful rolling restart (kill -HUP <pid>)
 # - Each worker is a full uvicorn async event loop
 # - --timeout 0: disable sync worker timeout (all handlers are async)

@@ -238,6 +238,22 @@ install_redis() {
 cmd_install() {
     require_root
 
+    # Abort if any service directory already exists to prevent accidental data loss
+    local existing=()
+    for svc in qdrant meilisearch rqlite; do
+        [[ -d "${ZAG_DIR}/$svc" ]] && existing+=("${ZAG_DIR}/$svc")
+    done
+    if [[ ${#existing[@]} -gt 0 ]]; then
+        warn "⚠️  Existing service data detected:"
+        for d in "${existing[@]}"; do
+            warn "    $d"
+        done
+        warn "⚠️  Aborting to prevent data loss."
+        warn "    If you intend to reinstall, remove the directories manually first:"
+        warn "    sudo rm -rf ~/.zag"
+        exit 1
+    fi
+
     # Stop any running services first (so binaries are not busy)
     for svc in qdrant meilisearch rqlite redis-server; do
         systemctl stop "$svc" 2>/dev/null || true

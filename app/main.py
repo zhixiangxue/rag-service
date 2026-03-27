@@ -165,7 +165,7 @@ def check_dependencies() -> bool:
     def _check_qdrant():
         qdrant_url = f"http://{config.VECTOR_STORE_HOST}:{config.VECTOR_STORE_PORT}"
         try:
-            resp = _requests.get(f"{qdrant_url}/healthz", timeout=5)
+            resp = _requests.get(f"{qdrant_url}/healthz", timeout=15)
             resp.raise_for_status()
             return True, f"[Qdrant] Reachable: {qdrant_url}"
         except Exception as exc:
@@ -202,10 +202,6 @@ def check_dependencies() -> bool:
                 print(f"  ⌛ {skipped_label} (not checked)")
             return False
     return True
-
-
-if not check_dependencies():
-    sys.exit(1)
 
 
 if __name__ == "__main__":
