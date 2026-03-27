@@ -76,7 +76,10 @@ if [[ "$ACTION" == "--upgrade" ]]; then
 
     # Step 1: Pull latest code
     echo -e "${GREEN}[1/3] Pulling latest code...${NC}"
+    # Reset execute-bit changes before pull to avoid conflicts, re-apply after
+    git checkout -- scripts/deploy.sh scripts/start_server.sh scripts/start_worker.sh 2>/dev/null || true
     git pull
+    chmod +x scripts/deploy.sh scripts/start_server.sh scripts/start_worker.sh
     if [ -d "../zag-ai" ]; then
         echo "Pulling zag-ai..."
         git -C ../zag-ai pull
