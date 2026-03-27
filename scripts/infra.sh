@@ -213,7 +213,8 @@ EOF
 
 install_redis() {
     info "Installing Redis via apt..."
-    apt-get update -qq
+    info "Updating apt package index..."
+    apt-get update
     apt-get install -y redis-server
 
     # Ensure it's enabled and running
