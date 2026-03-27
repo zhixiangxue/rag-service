@@ -280,7 +280,8 @@ cmd_status() {
         local name="$svc"
         [[ "$svc" == "redis" ]] && name="redis-server"
         local status
-        status=$(systemctl is-active "$name" 2>/dev/null || echo "not-found")
+        status=$(systemctl is-active "$name" 2>/dev/null) || true
+        [[ -z "$status" ]] && status="not-found"
         if [[ "$status" == "active" ]]; then
             echo -e "  ${GREEN}●${NC} $svc — active"
         else
