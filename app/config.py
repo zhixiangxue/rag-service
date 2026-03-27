@@ -111,8 +111,6 @@ AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
 # ============================================
 # PDF Cache Configuration
 # ============================================
-# Directory for cached PDF parsing results (reader-agnostic, keyed by doc_id)
-ARCHIVES_DIR = os.getenv("ARCHIVES_DIR", str(Path.home() / ".zag" / "cache" / "archives"))
 # Directory where original PDFs are pre-placed as {doc_id}.pdf for fast locate lookup
 PDF_FILES_DIR = os.getenv("PDF_FILES_DIR", str(Path.home() / ".zag" / "cache" / "pdfs"))
 # Persistent diskcache for locate_pages: stores (full_text, page_positions) per doc_id

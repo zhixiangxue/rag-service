@@ -25,7 +25,6 @@ from ..schemas import (
     LocatePageRequest,
     LocatePageResult,
     LocatePageResponse,
-    CacheUploadResponse,
 )
 from ..storage import get_storage
 from ..constants import TaskStatus, DocumentStatus
@@ -1085,77 +1084,6 @@ def delete_document(dataset_id: str, doc_id: str):
         message="Document deleted successfully",
         data=MessageResponse(message="Document deleted successfully")
     )
-
-
-@router.post("/{doc_id}/cache", response_model=ApiResponse[CacheUploadResponse])
-async def upload_document_cache(
-    dataset_id: str,
-    doc_id: str,
-    file: UploadFile = File(...),
-):
-    """
-    Upload PDF parsing cache from worker.
-    
-    Worker calls this after processing a PDF to upload the cache directory.
-    The cache is extracted to ARCHIVES_DIR/{doc_id}/ for later use by /locate API.
-    
-    Args:
-        file: tar.gz archive of the cache directory
-        
-    Returns:
-        Cache upload confirmation with path and size
-    """
-    import tarfile
-    import shutil
-    
-    # Validate file type
-    if not file.filename.endswith('.tar.gz'):
-        raise HTTPException(status_code=400, detail="File must be a .tar.gz archive")
-    
-    # Prepare cache directory
-    cache_dir = Path(config.ARCHIVES_DIR) / doc_id
-    
-    # Remove existing cache if present
-    if cache_dir.exists():
-        shutil.rmtree(cache_dir)
-    
-    # Save uploaded file to temp location
-    temp_file = Path(tempfile.gettempdir()) / f"cache_{doc_id}.tar.gz"
-    try:
-        with open(temp_file, "wb") as f:
-            content = await file.read()
-            f.write(content)
-        
-        # Extract archive
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(temp_file, "r:gz") as tar:
-            tar.extractall(path=Path(config.ARCHIVES_DIR))
-        
-        # Calculate size
-        total_size = sum(f.stat().st_size for f in cache_dir.rglob('*') if f.is_file())
-        
-        return ApiResponse(
-            success=True,
-            code=200,
-            message="Cache uploaded successfully",
-            data=CacheUploadResponse(
-                doc_id=doc_id,
-                cache_path=str(cache_dir),
-                size_bytes=total_size,
-                message=f"Cache extracted to {cache_dir}"
-            )
-        )
-    except Exception as e:
-        # Cleanup on error
-        if cache_dir.exists():
-            shutil.rmtree(cache_dir)
-        raise HTTPException(status_code=500, detail=f"Failed to process cache: {str(e)}")
-    finally:
-        # Cleanup temp file (best-effort: on Windows the OS may still hold the lock)
-        try:
-            temp_file.unlink(missing_ok=True)
-        except OSError:
-            pass  # Windows: file lock not yet released, OS will clean up temp dir
 
 
 # TEMPORARY HACK — TODO: delete this function once the two broken docs are re-indexed.

@@ -33,6 +33,118 @@ broker = RedisBroker(host=config.REDIS_HOST, port=config.REDIS_PORT)
 dramatiq.set_broker(broker)
 
 
+# ── Startup: config summary + connectivity checks ───────────────────────────
+
+def _print_worker_config() -> None:
+    """Print worker configuration summary on startup."""
+    print("\n" + "=" * 60)
+    print("  RAG Worker Configuration Summary")
+    print("=" * 60)
+    print(f"\n[Redis / Broker]")
+    print(f"  REDIS_HOST: {config.REDIS_HOST}")
+    print(f"  REDIS_PORT: {config.REDIS_PORT}")
+    print(f"\n[Vector Store]")
+    print(f"  VECTOR_STORE_HOST: {config.VECTOR_STORE_HOST}")
+    print(f"  VECTOR_STORE_PORT: {config.VECTOR_STORE_PORT}")
+    print(f"\n[Meilisearch]")
+    print(f"  MEILISEARCH_HOST: {config.MEILISEARCH_HOST}")
+    print(f"  MEILISEARCH_API_KEY: {'set' if config.MEILISEARCH_API_KEY else 'not set'}")
+    print(f"\n[Embedding / LLM]")
+    print(f"  EMBEDDING_URI: {config.EMBEDDING_URI}")
+    print(f"  LLM_PROVIDER: {config.LLM_PROVIDER}")
+    print(f"  LLM_MODEL: {config.LLM_MODEL}")
+    print(f"\n[Processing]")
+    print(f"  USE_GPU: {config.USE_GPU}")
+    print(f"  NUM_THREADS: {config.NUM_THREADS}")
+    print(f"  MAX_CHUNK_TOKENS: {config.MAX_CHUNK_TOKENS}")
+    print("=" * 60)
+
+
+def _check_worker_dependencies() -> None:
+    """Check Redis, Qdrant, Meilisearch, embedding, and GPU. Fail-fast: stops on first failure."""
+    import requests as _requests
+
+    def _check_redis():
+        try:
+            import redis as _redis
+            r = _redis.Redis(
+                host=config.REDIS_HOST,
+                port=config.REDIS_PORT,
+                socket_timeout=5,
+                socket_connect_timeout=5,
+            )
+            r.ping()
+            return True, f"[Redis] Reachable: {config.REDIS_HOST}:{config.REDIS_PORT}"
+        except Exception as exc:
+            return False, f"[Redis] Cannot connect to {config.REDIS_HOST}:{config.REDIS_PORT}: {exc}"
+
+    def _check_qdrant():
+        qdrant_url = f"http://{config.VECTOR_STORE_HOST}:{config.VECTOR_STORE_PORT}"
+        try:
+            resp = _requests.get(f"{qdrant_url}/healthz", timeout=5)
+            resp.raise_for_status()
+            return True, f"[Qdrant] Reachable: {qdrant_url}"
+        except Exception as exc:
+            return False, f"[Qdrant] Cannot connect to {qdrant_url}: {exc}"
+
+    def _check_meilisearch():
+        if not config.MEILISEARCH_HOST:
+            return False, "[Meilisearch] MEILISEARCH_HOST is not set"
+        try:
+            resp = _requests.get(f"{config.MEILISEARCH_HOST.rstrip('/')}/health", timeout=5)
+            resp.raise_for_status()
+            return True, f"[Meilisearch] Reachable: {config.MEILISEARCH_HOST}"
+        except Exception as exc:
+            return False, f"[Meilisearch] Cannot connect to {config.MEILISEARCH_HOST}: {exc}"
+
+    def _check_embedding():
+        embedding_uri = config.EMBEDDING_URI
+        if embedding_uri != "openai/text-embedding-3-small":
+            return False, f"[Embedding] EMBEDDING_URI must be 'openai/text-embedding-3-small', got '{embedding_uri}'"
+        if config.OPENAI_API_KEY:
+            return True, f"[Embedding] OPENAI_API_KEY set, model: {embedding_uri}"
+        return False, "[Embedding] OPENAI_API_KEY is not set"
+
+    def _check_gpu():
+        if not config.USE_GPU:
+            return True, "[GPU] USE_GPU=false, skipping"
+        try:
+            import torch
+            if torch.cuda.is_available():
+                gpu_name = torch.cuda.get_device_name(0)
+                total_mem = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+                return True, f"[GPU] CUDA available: {gpu_name} ({total_mem:.1f} GB)"
+            return False, "[GPU] USE_GPU=true but CUDA is not available"
+        except ImportError:
+            return False, "[GPU] USE_GPU=true but torch is not installed"
+
+    checks = [
+        ("[Redis]",       _check_redis),
+        ("[Qdrant]",      _check_qdrant),
+        ("[Meilisearch]", _check_meilisearch),
+        ("[Embedding]",   _check_embedding),
+        ("[GPU]",         _check_gpu),
+    ]
+
+    print("[Worker] Checking dependencies...")
+    for i, (label, fn) in enumerate(checks):
+        ok, msg = fn()
+        if ok:
+            print(f"  ✅ {msg}")
+        else:
+            print(f"  ❌ {msg}")
+            for skipped_label, _ in checks[i + 1:]:
+                print(f"  ⌛ {skipped_label} (not checked)")
+            print("[Worker] Dependency check failed. Exiting.")
+            sys.exit(1)
+
+    print("[Worker] All dependencies OK. Starting worker...\n")
+
+
+_print_worker_config()
+_check_worker_dependencies()
+
+
 # ── GPU helpers (preserved from daemon.py) ─────────────────────────────────────
 
 def check_gpu_memory_usage() -> Optional[float]:

@@ -265,7 +265,7 @@ class ClassicDocumentProcessor:
 
         self._save_checkpoint()
 
-        # Cache to ARCHIVES_DIR for reuse (best effort, failure is acceptable)
+        # Cache to local ARCHIVES_DIR for reuse (best effort, failure is acceptable)
         try:
             console.print("\nCaching document...")
             archive_path = self.document.dump(ARCHIVES_DIR)

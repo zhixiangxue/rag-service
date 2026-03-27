@@ -59,9 +59,9 @@ else
     exit 1
 fi
 
-# Run as module from rag-service directory
-echo "[3/3] Starting worker (python -m worker.main)..."
+# Run as dramatiq worker from rag-service directory
+echo "[3/3] Starting worker (python -m dramatiq worker.main)..."
 echo ""
 echo "========================================"
 echo ""
-python -m worker.main
+python -m dramatiq worker.main

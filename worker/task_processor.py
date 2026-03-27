@@ -9,7 +9,6 @@ import asyncio
 import httpx
 import tempfile
 import gc
-import tarfile
 import shutil
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -25,68 +24,6 @@ from .indexers.classic import index_classic
 from .indexers.lod import index_lod
 
 console = Console()
-
-
-async def upload_cache_to_api(
-    api_base_url: str,
-    dataset_id: str,
-    doc_id: str,
-    cache_dir: Path
-) -> bool:
-    """
-    Upload PDF parsing cache to RAG server.
-    
-    Args:
-        api_base_url: RAG API base URL
-        dataset_id: Dataset ID
-        doc_id: Document ID (content hash)
-        cache_dir: Local cache directory path
-        
-    Returns:
-        True if upload successful, False otherwise
-    """
-    if not cache_dir.exists():
-        console.print(f"[dim]Cache directory not found: {cache_dir}, skipping upload[/dim]")
-        return False
-    
-    # Create tar.gz archive
-    temp_file = Path(tempfile.gettempdir()) / f"cache_{doc_id}.tar.gz"
-    
-    try:
-        console.print(f"[dim]Creating cache archive from {cache_dir}...[/dim]")
-        with tarfile.open(temp_file, "w:gz") as tar:
-            tar.add(cache_dir, arcname=doc_id)
-        
-        archive_size = temp_file.stat().st_size
-        console.print(f"[dim]Cache archive size: {archive_size:,} bytes[/dim]")
-        
-        # Upload to API
-        url = f"{api_base_url}/datasets/{dataset_id}/documents/{doc_id}/cache"
-        
-        console.print(f"[dim]Uploading cache to {url}...[/dim]")
-        
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            with open(temp_file, "rb") as f:
-                files = {"file": (f"{doc_id}.tar.gz", f, "application/gzip")}
-                response = await client.post(url, files=files, headers=config.API_HEADERS)
-        
-        if response.status_code == 200:
-            data = response.json().get("data", {})
-            console.print(f"[green]✓ Cache uploaded successfully[/green]")
-            console.print(f"[dim]  Server cache path: {data.get('cache_path')}[/dim]")
-            return True
-        else:
-            console.print(f"[yellow]⚠ Cache upload failed: HTTP {response.status_code}[/yellow]")
-            console.print(f"[dim]  Response: {response.text[:200]}[/dim]")
-            return False
-            
-    except Exception as e:
-        console.print(f"[yellow]⚠ Cache upload error: {e}[/yellow]")
-        return False
-    finally:
-        # Cleanup temp file
-        if temp_file.exists():
-            temp_file.unlink(missing_ok=True)
 
 
 async def update_task_status(
@@ -303,11 +240,6 @@ async def process_single_task(task: Dict[str, Any]) -> int:
             progress=100,
             unit_count=result["unit_count"]
         )
-        
-        # Upload cache to RAG server for /locate API
-        console.print("[dim]Uploading PDF cache to RAG server...[/dim]")
-        cache_dir = config.ARCHIVES_DIR / doc_id
-        await upload_cache_to_api(api_base_url, dataset_id, doc_id, cache_dir)
         
         console.print(f"\n[bold green]✓ Task {task_id} completed[/bold green]")
         return 0

@@ -137,6 +137,77 @@ async def root():
     return RedirectResponse(url="/docs")
 
 
+# ── Startup dependency check (runs for both gunicorn and python -m app.main) ────
+
+def check_dependencies() -> bool:
+    """Check DB, Qdrant, and Redis. Fail-fast: stops on first failure and marks rest as skipped."""
+    import requests as _requests
+
+    def _check_db():
+        db_uri = config.DATABASE_URI
+        if db_uri.lower().startswith("sqlite"):
+            db_path_str = db_uri[len("sqlite:///"):]
+            db_path = Path(db_path_str)
+            if not db_path.is_absolute():
+                db_path = (Path.cwd() / db_path).resolve()
+            if db_path.exists():
+                return True, f"[DB] SQLite file found: {db_path}"
+            return False, f"[DB] SQLite file not found: {db_path}"
+        elif db_uri.startswith("http://") or db_uri.startswith("https://"):
+            try:
+                resp = _requests.get(f"{db_uri.rstrip('/')}/status", timeout=5)
+                resp.raise_for_status()
+                return True, f"[DB] rqlite reachable: {db_uri}"
+            except Exception as exc:
+                return False, f"[DB] Cannot connect to rqlite: {exc}"
+        return False, f"[DB] Unrecognised DB URI scheme: {db_uri}"
+
+    def _check_qdrant():
+        qdrant_url = f"http://{config.VECTOR_STORE_HOST}:{config.VECTOR_STORE_PORT}"
+        try:
+            resp = _requests.get(f"{qdrant_url}/healthz", timeout=5)
+            resp.raise_for_status()
+            return True, f"[Qdrant] Reachable: {qdrant_url}"
+        except Exception as exc:
+            return False, f"[Qdrant] Cannot connect to {qdrant_url}: {exc}"
+
+    def _check_redis():
+        try:
+            import redis as _redis
+            r = _redis.Redis(
+                host=config.REDIS_HOST,
+                port=config.REDIS_PORT,
+                socket_timeout=5,
+                socket_connect_timeout=5,
+            )
+            r.ping()
+            return True, f"[Redis] Reachable: {config.REDIS_HOST}:{config.REDIS_PORT}"
+        except Exception as exc:
+            return False, f"[Redis] Cannot connect to {config.REDIS_HOST}:{config.REDIS_PORT}: {exc}"
+
+    checks = [
+        ("[DB]",     _check_db),
+        ("[Qdrant]", _check_qdrant),
+        ("[Redis]",  _check_redis),
+    ]
+
+    print("[Main] Checking dependencies...")
+    for i, (label, fn) in enumerate(checks):
+        ok, msg = fn()
+        if ok:
+            print(f"  ✅ {msg}")
+        else:
+            print(f"  ❌ {msg}")
+            for skipped_label, _ in checks[i + 1:]:
+                print(f"  ⌛ {skipped_label} (not checked)")
+            return False
+    return True
+
+
+if not check_dependencies():
+    sys.exit(1)
+
+
 if __name__ == "__main__":
     import uvicorn
     from .config import API_HOST, API_PORT
@@ -150,11 +221,8 @@ if __name__ == "__main__":
         print(f"\n[Database]")
         print(f"  DATABASE_URI: {config.DATABASE_URI}")
         print(f"\n[Cache]")
-        _archives_dir = os.path.abspath(config.ARCHIVES_DIR)
         _pdf_dir = os.path.abspath(config.PDF_FILES_DIR)
-        _archives_count = len(os.listdir(_archives_dir)) if os.path.isdir(_archives_dir) else 0
         _pdf_count = len(os.listdir(_pdf_dir)) if os.path.isdir(_pdf_dir) else 0
-        print(f"  ARCHIVES_DIR: {_archives_dir} ({_archives_count})")
         print(f"  PDF_FILES_DIR: {_pdf_dir} ({_pdf_count})")
         print(f"\n[Vector Store]")
         print(f"  VECTOR_STORE_TYPE: {config.VECTOR_STORE_TYPE}")
@@ -173,6 +241,9 @@ if __name__ == "__main__":
         print(f"\n[LLM]")
         print(f"  LLM_PROVIDER: {config.LLM_PROVIDER}")
         print(f"  LLM_MODEL: {config.LLM_MODEL}")
+        print(f"\n[Redis]")
+        print(f"  REDIS_HOST: {config.REDIS_HOST}")
+        print(f"  REDIS_PORT: {config.REDIS_PORT}")
         print(f"\n[API Server]")
         print(f"  API_HOST: {API_HOST}")
         print(f"  API_PORT: {API_PORT}")
@@ -199,6 +270,9 @@ if __name__ == "__main__":
             return False
 
     if not confirm_config():
+        sys.exit(1)
+
+    if not check_dependencies():
         sys.exit(1)
 
     # Note: For /query/web demo endpoint, use --timeout-keep-alive 180 to allow slow LLM pipeline

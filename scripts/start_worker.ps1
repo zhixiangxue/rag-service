@@ -56,12 +56,12 @@ if ($venvPath) {
     exit 1
 }
 
-# Run as module from rag-service directory
-Write-Host "[3/3] Starting worker (python -m worker.main)..." -ForegroundColor Green
+# Run as dramatiq worker from rag-service directory
+Write-Host "[3/3] Starting worker (python -m dramatiq worker.main)..." -ForegroundColor Green
 Write-Host "`n========================================`n" -ForegroundColor Cyan
 
 $proc = Start-Process -FilePath "python" `
-    -ArgumentList "-m", "worker.main" `
+    -ArgumentList "-m", "dramatiq", "worker.main" `
     -NoNewWindow `
     -PassThru
 

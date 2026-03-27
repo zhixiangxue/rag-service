@@ -261,14 +261,6 @@ class DatasetStats(BaseModel):
     last_ingest_time: Optional[str] = None
 
 
-# ============ Cache Upload ============
-
-class CacheUploadResponse(BaseModel):
-    """Response for cache upload."""
-    doc_id: str
-    cache_path: str
-    size_bytes: int
-    message: str
 
 
 # ============ Page Location ============

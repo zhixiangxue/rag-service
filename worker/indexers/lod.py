@@ -194,7 +194,7 @@ async def index_lod(
         doc = await corrector.acorrect_document(doc)
         console.print("  ✅ Headings corrected")
     
-    # Dump to cache for reuse
+    # Dump to local cache for reuse
     archive_path = doc.dump(ARCHIVES_DIR)
     console.print(f"  💾 Cached: {archive_path}")
 
