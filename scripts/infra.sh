@@ -114,8 +114,7 @@ EOF
 
     systemctl daemon-reload
     systemctl enable qdrant
-    systemctl start qdrant
-    info "Qdrant installed and started (HTTP :${QDRANT_PORT_HTTP})"
+    info "Qdrant installed (HTTP :${QDRANT_PORT_HTTP})"
 }
 
 install_meilisearch() {
@@ -164,8 +163,7 @@ EOF
 
     systemctl daemon-reload
     systemctl enable meilisearch
-    systemctl start meilisearch
-    info "Meilisearch installed and started (:${MEILISEARCH_PORT})"
+    info "Meilisearch installed (:${MEILISEARCH_PORT})"
 }
 
 install_rqlite() {
@@ -208,8 +206,7 @@ EOF
 
     systemctl daemon-reload
     systemctl enable rqlite
-    systemctl start rqlite
-    info "rqlite installed and started (:${RQLITE_PORT_HTTP})"
+    info "rqlite installed (:${RQLITE_PORT_HTTP})"
 }
 
 install_redis() {
@@ -220,8 +217,7 @@ install_redis() {
 
     # Ensure it's enabled and running
     systemctl enable redis-server
-    systemctl start redis-server
-    info "Redis installed and started (:${REDIS_PORT})"
+    info "Redis installed (:${REDIS_PORT})"
 }
 
 # ============================================================
@@ -229,6 +225,12 @@ install_redis() {
 # ============================================================
 cmd_install() {
     require_root
+
+    # Stop any running services first (so binaries are not busy)
+    for svc in qdrant meilisearch rqlite redis-server; do
+        systemctl stop "$svc" 2>/dev/null || true
+    done
+
     mkdir -p "$INSTALL_DIR" "$DATA_DIR" "$CONFIG_DIR"
 
     install_qdrant
@@ -236,8 +238,11 @@ cmd_install() {
     install_rqlite
     install_redis
 
-    # Fix ownership: dirs created under sudo, give them back to the real user
+    # Fix ownership: all dirs were created under sudo, give them back to the real user
     chown -R "$CURRENT_USER:$CURRENT_USER" "$DATA_DIR" "$CONFIG_DIR"
+
+    # Start services after ownership is correct
+    systemctl start qdrant meilisearch rqlite redis-server
 
     echo ""
     info "All infrastructure services installed."
