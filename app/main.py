@@ -140,7 +140,7 @@ async def root():
 # ── Startup dependency check (runs for both gunicorn and python -m app.main) ────
 
 def check_dependencies() -> bool:
-    """Check DB, Qdrant, and Redis. Fail-fast: stops on first failure and marks rest as skipped."""
+    """Check DB, Qdrant, Redis, and Meilisearch. Fail-fast: stops on first failure and marks rest as skipped."""
     import requests as _requests
 
     def _check_db():
@@ -185,10 +185,23 @@ def check_dependencies() -> bool:
         except Exception as exc:
             return False, f"[Redis] Cannot connect to {config.REDIS_HOST}:{config.REDIS_PORT}: {exc}"
 
+    def _check_meilisearch():
+        host = config.MEILISEARCH_HOST
+        if not host:
+            return True, "[Meilisearch] Not configured, skipping"
+        url = f"{host.rstrip('/')}/health"
+        try:
+            resp = _requests.get(url, timeout=5)
+            resp.raise_for_status()
+            return True, f"[Meilisearch] Reachable: {host}"
+        except Exception as exc:
+            return False, f"[Meilisearch] Cannot connect to {host}: {exc}"
+
     checks = [
-        ("[DB]",     _check_db),
-        ("[Qdrant]", _check_qdrant),
-        ("[Redis]",  _check_redis),
+        ("[DB]",          _check_db),
+        ("[Qdrant]",      _check_qdrant),
+        ("[Redis]",       _check_redis),
+        ("[Meilisearch]", _check_meilisearch),
     ]
 
     print("[Main] Checking dependencies...")
