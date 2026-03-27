@@ -18,6 +18,9 @@ CURRENT_USER="${SUDO_USER:-$USER}"
 USER_HOME=$(eval echo "~$CURRENT_USER")
 DATA_DIR="$USER_HOME/.zag/data"
 CONFIG_DIR="$USER_HOME/.zag/config"
+# Node address for rqlite advertised endpoints.
+# Override via env: NODE_ADDR=1.2.3.4 sudo ./infra.sh --install
+NODE_ADDR="${NODE_ADDR:-$(hostname -I | awk '{print $1}')}"
 
 QDRANT_VERSION="v1.17.0"
 MEILISEARCH_VERSION="v1.40.0"
@@ -87,6 +90,7 @@ service:
   host: 0.0.0.0
 storage:
   storage_path: ${DATA_DIR}/qdrant
+  snapshots_path: ${DATA_DIR}/qdrant/snapshots
 performance:
   max_search_threads: 0
   max_optimization_threads: 2
@@ -102,6 +106,7 @@ After=network.target
 [Service]
 Type=simple
 User=${CURRENT_USER}
+WorkingDirectory=${DATA_DIR}/qdrant
 ExecStart=${dest}/qdrant --config-path ${CONFIG_DIR}/qdrant.yaml
 Restart=on-failure
 RestartSec=5
@@ -194,7 +199,7 @@ After=network.target
 [Service]
 Type=simple
 User=${CURRENT_USER}
-ExecStart=${dest}/rqlited -node-id 1 -http-addr 0.0.0.0:${RQLITE_PORT_HTTP} -raft-addr 0.0.0.0:${RQLITE_PORT_RAFT} ${DATA_DIR}/rqlite
+ExecStart=${dest}/rqlited -node-id 1 -http-addr 0.0.0.0:${RQLITE_PORT_HTTP} -http-adv-addr ${NODE_ADDR}:${RQLITE_PORT_HTTP} -raft-addr 0.0.0.0:${RQLITE_PORT_RAFT} -raft-adv-addr ${NODE_ADDR}:${RQLITE_PORT_RAFT} ${DATA_DIR}/rqlite
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
