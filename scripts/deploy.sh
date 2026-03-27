@@ -169,6 +169,7 @@ fi
 echo -e "${GREEN}[1/9] Cloning rag-service repository...${NC}"
 git clone https://github.com/zhixiangxue/rag-service.git
 cd rag-service
+chmod +x scripts/deploy.sh scripts/start_server.sh scripts/start_worker.sh
 echo ""
 
 # Step 1.5: Install and configure tmux
