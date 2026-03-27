@@ -285,7 +285,7 @@ cmd_start() {
         local name="$svc"
         [[ "$svc" == "redis" ]] && name="redis-server"
         info "Starting $svc..."
-        systemctl start "$name"
+        sudo systemctl start "$name"
     done
 }
 
@@ -296,7 +296,7 @@ cmd_stop() {
         local name="$svc"
         [[ "$svc" == "redis" ]] && name="redis-server"
         info "Stopping $svc..."
-        systemctl stop "$name"
+        sudo systemctl stop "$name"
     done
 }
 
@@ -307,7 +307,7 @@ cmd_restart() {
         local name="$svc"
         [[ "$svc" == "redis" ]] && name="redis-server"
         info "Restarting $svc..."
-        systemctl restart "$name"
+        sudo systemctl restart "$name"
     done
 }
 
