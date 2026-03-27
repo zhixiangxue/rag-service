@@ -13,10 +13,11 @@ set -e
 # Configuration — adjust these if your paths differ
 # ============================================================
 INSTALL_DIR="/opt/infra"
-DATA_DIR="/var/lib/infra"
-CONFIG_DIR="/etc/infra"
 SERVICE_DIR="/etc/systemd/system"
 CURRENT_USER="${SUDO_USER:-$USER}"
+USER_HOME=$(eval echo "~$CURRENT_USER")
+DATA_DIR="$USER_HOME/.zag/data"
+CONFIG_DIR="$USER_HOME/.zag/config"
 
 QDRANT_VERSION="v1.17.0"
 MEILISEARCH_VERSION="v1.40.0"
@@ -229,12 +230,14 @@ install_redis() {
 cmd_install() {
     require_root
     mkdir -p "$INSTALL_DIR" "$DATA_DIR" "$CONFIG_DIR"
-    chown "$CURRENT_USER:$CURRENT_USER" "$DATA_DIR" "$CONFIG_DIR" 2>/dev/null || true
 
     install_qdrant
     install_meilisearch
     install_rqlite
     install_redis
+
+    # Fix ownership: dirs created under sudo, give them back to the real user
+    chown -R "$CURRENT_USER:$CURRENT_USER" "$DATA_DIR" "$CONFIG_DIR"
 
     echo ""
     info "All infrastructure services installed."
