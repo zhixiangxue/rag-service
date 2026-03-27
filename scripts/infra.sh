@@ -12,12 +12,11 @@ set -e
 # ============================================================
 # Configuration — adjust these if your paths differ
 # ============================================================
-INSTALL_DIR="/opt/infra"
 SERVICE_DIR="/etc/systemd/system"
 CURRENT_USER="${SUDO_USER:-$USER}"
 USER_HOME=$(eval echo "~$CURRENT_USER")
-DATA_DIR="$USER_HOME/.zag/data"
-CONFIG_DIR="$USER_HOME/.zag/config"
+# All service files (binary + config + data) live under ZAG_DIR/<service>/
+ZAG_DIR="$USER_HOME/.zag"
 # Node address for rqlite advertised endpoints.
 # Override via env: NODE_ADDR=1.2.3.4 sudo ./infra.sh --install
 NODE_ADDR="${NODE_ADDR:-$(hostname -I | awk '{print $1}')}"
@@ -75,22 +74,22 @@ install_qdrant() {
     [[ "$arch" == "x86_64" ]] && arch="x86_64" || arch="aarch64"
 
     local url="https://github.com/qdrant/qdrant/releases/download/${QDRANT_VERSION}/qdrant-${arch}-unknown-linux-gnu.tar.gz"
-    local dest="${INSTALL_DIR}/qdrant"
-    mkdir -p "$dest" "${DATA_DIR}/qdrant" "${CONFIG_DIR}"
+    local dest="${ZAG_DIR}/qdrant"
+    mkdir -p "$dest/data" "$dest/snapshots"
 
     wget -qO /tmp/qdrant.tar.gz "$url"
     tar -xzf /tmp/qdrant.tar.gz -C "$dest"
     chmod +x "$dest/qdrant"
 
-    # Write config
-    cat > "${CONFIG_DIR}/qdrant.yaml" <<EOF
+    # Write config alongside binary
+    cat > "${dest}/config.yaml" <<EOF
 service:
   http_port: ${QDRANT_PORT_HTTP}
   grpc_port: ${QDRANT_PORT_GRPC}
   host: 0.0.0.0
 storage:
-  storage_path: ${DATA_DIR}/qdrant
-  snapshots_path: ${DATA_DIR}/qdrant/snapshots
+  storage_path: ${dest}/data
+  snapshots_path: ${dest}/snapshots
 performance:
   max_search_threads: 0
   max_optimization_threads: 2
@@ -106,8 +105,8 @@ After=network.target
 [Service]
 Type=simple
 User=${CURRENT_USER}
-WorkingDirectory=${DATA_DIR}/qdrant
-ExecStart=${dest}/qdrant --config-path ${CONFIG_DIR}/qdrant.yaml
+WorkingDirectory=${dest}
+ExecStart=${dest}/qdrant --config-path ${dest}/config.yaml
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -130,8 +129,8 @@ install_meilisearch() {
     [[ "$arch" == "x86_64" ]] && arch="amd64" || arch="aarch64"
 
     local url="https://github.com/meilisearch/meilisearch/releases/download/${MEILISEARCH_VERSION}/meilisearch-linux-${arch}"
-    local dest="${INSTALL_DIR}/meilisearch"
-    mkdir -p "$dest" "${DATA_DIR}/meilisearch"
+    local dest="${ZAG_DIR}/meilisearch"
+    mkdir -p "$dest/data"
 
     # Single binary, no archive to extract
     wget -qO "$dest/meilisearch" "$url"
@@ -153,7 +152,7 @@ After=network.target
 [Service]
 Type=simple
 User=${CURRENT_USER}
-Environment="MEILI_DB_PATH=${DATA_DIR}/meilisearch"
+Environment="MEILI_DB_PATH=${dest}/data"
 Environment="MEILI_HTTP_ADDR=0.0.0.0:${MEILISEARCH_PORT}"
 $([ -n "$master_key" ] && echo "Environment=\"MEILI_MASTER_KEY=${master_key}\"")
 ExecStart=${dest}/meilisearch
@@ -179,9 +178,9 @@ install_rqlite() {
 
     # rqlite version without 'v' prefix in filename: rqlite-v9.4.5-linux-amd64.tar.gz
     local url="https://github.com/rqlite/rqlite/releases/download/${RQLITE_VERSION}/rqlite-${RQLITE_VERSION}-linux-${arch}.tar.gz"
-    local dest="${INSTALL_DIR}/rqlite"
+    local dest="${ZAG_DIR}/rqlite"
     local ver_strip="${RQLITE_VERSION}"  # keep v prefix, matches folder name
-    mkdir -p "$dest" "${DATA_DIR}/rqlite"
+    mkdir -p "$dest/data"
 
     wget -qO /tmp/rqlite.tar.gz "$url"
     tar -xzf /tmp/rqlite.tar.gz -C /tmp
@@ -199,7 +198,7 @@ After=network.target
 [Service]
 Type=simple
 User=${CURRENT_USER}
-ExecStart=${dest}/rqlited -node-id 1 -http-addr 0.0.0.0:${RQLITE_PORT_HTTP} -http-adv-addr ${NODE_ADDR}:${RQLITE_PORT_HTTP} -raft-addr 0.0.0.0:${RQLITE_PORT_RAFT} -raft-adv-addr ${NODE_ADDR}:${RQLITE_PORT_RAFT} ${DATA_DIR}/rqlite
+ExecStart=${dest}/rqlited -node-id 1 -http-addr 0.0.0.0:${RQLITE_PORT_HTTP} -http-adv-addr ${NODE_ADDR}:${RQLITE_PORT_HTTP} -raft-addr 0.0.0.0:${RQLITE_PORT_RAFT} -raft-adv-addr ${NODE_ADDR}:${RQLITE_PORT_RAFT} ${dest}/data
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -236,15 +235,16 @@ cmd_install() {
         systemctl stop "$svc" 2>/dev/null || true
     done
 
-    mkdir -p "$INSTALL_DIR" "$DATA_DIR" "$CONFIG_DIR"
+    # Each service gets its own dir under ZAG_DIR
+    mkdir -p "${ZAG_DIR}/qdrant" "${ZAG_DIR}/meilisearch" "${ZAG_DIR}/rqlite"
 
     install_qdrant
     install_meilisearch
     install_rqlite
     install_redis
 
-    # Fix ownership: all dirs were created under sudo, give them back to the real user
-    chown -R "$CURRENT_USER:$CURRENT_USER" "$DATA_DIR" "$CONFIG_DIR"
+    # Fix ownership: dirs created under sudo, give them back to the real user
+    chown -R "$CURRENT_USER:$CURRENT_USER" "$ZAG_DIR"
 
     # Start services after ownership is correct
     systemctl start qdrant meilisearch rqlite redis-server
