@@ -30,7 +30,7 @@ QDRANT_PORT_GRPC=16334
 MEILISEARCH_PORT=7700
 RQLITE_PORT_HTTP=4001
 RQLITE_PORT_RAFT=4002
-REDIS_PORT=6379
+REDIS_PORT=6380
 
 ALL_SERVICES=(qdrant meilisearch rqlite redis)
 
@@ -221,6 +221,11 @@ install_redis() {
     info "Updating apt package index..."
     apt-get update
     apt-get install -y redis-server
+
+    # Configure port and bind address
+    local conf="/etc/redis/redis.conf"
+    sed -i "s/^port .*/port ${REDIS_PORT}/" "$conf"
+    sed -i "s/^bind .*/bind 0.0.0.0/" "$conf"
 
     # Ensure it's enabled and running
     systemctl enable redis-server
