@@ -133,8 +133,8 @@ async def process_single_task(task: Dict[str, Any]) -> int:
         task_data = await update_task_status(api_base_url, task_id, TaskStatus.PROCESSING, progress=0)
         
         if not task_data:
-            console.print(f"[yellow]Failed to claim task {task_id}[/yellow]")
-            return 1
+            console.print(f"[yellow]Failed to claim task {task_id} (already in terminal state or conflict)[/yellow]")
+            return 3  # Permanent failure - do not retry
         
         console.print("[green]Task claimed successfully[/green]")
         
