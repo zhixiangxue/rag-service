@@ -275,7 +275,7 @@ def _get_worker() -> str:
 
 # ── Dramatiq actor ─────────────────────────────────────────────────────────────
 
-@dramatiq.actor(max_retries=3, min_backoff=5000)
+@dramatiq.actor(max_retries=3, min_backoff=5000, time_limit=float("inf"))
 def process_document(task_id: str):
     """
     Receive a task_id, fetch task details from the API, then run task_processor
