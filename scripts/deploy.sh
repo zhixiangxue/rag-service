@@ -107,7 +107,7 @@ if [[ "$ACTION" == "--upgrade" ]]; then
     if $DEPLOY_WORKER; then
         echo ""
         echo "Upgrading MinerU..."
-        pip install "mineru[all]>=2.7.6" --upgrade
+        pip install "mineru[all]==3.0.1" --upgrade
         echo ""
         echo -e "${GREEN}[3.5/3] Verifying document readers...${NC}"
         if python scripts/verify_readers.py; then
@@ -347,7 +347,7 @@ echo ""
 # Step 5.5: Install MinerU (worker only)
 if $DEPLOY_WORKER; then
     echo -e "${GREEN}[5.5/9] Installing MinerU...${NC}"
-    pip install "mineru[all]>=2.7.6"
+    pip install "mineru[all]==3.0.1"
     echo ""
 fi
 
