@@ -336,7 +336,7 @@ def process_document(task_id: str):
 
     start_time = datetime.now()
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-    proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, env=env)
+    proc = subprocess.Popen(cmd, stdout=None, stderr=None, env=env)
 
     # ── 8. Wait for subprocess, polling for cancel every 5 seconds ───────────
     CANCEL_POLL_INTERVAL = 5  # seconds
