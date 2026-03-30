@@ -223,4 +223,5 @@ uploads/
 .workspace/
 .env
 .prod.env
+.test.env
 log/*

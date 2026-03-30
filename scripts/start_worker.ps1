@@ -61,7 +61,7 @@ Write-Host "[3/3] Starting worker (python -m dramatiq worker.main)..." -Foregrou
 Write-Host "`n========================================`n" -ForegroundColor Cyan
 
 $proc = Start-Process -FilePath "python" `
-    -ArgumentList "-m", "dramatiq", "worker.main" `
+    -ArgumentList "-m", "dramatiq", "worker.main", "--processes", "1", "--threads", "1" `
     -NoNewWindow `
     -PassThru
 
