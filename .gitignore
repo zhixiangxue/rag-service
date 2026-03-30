@@ -221,3 +221,6 @@ uploads/
 .env.prod
 *.exe
 .workspace/
+.env
+.prod.env
+log/*

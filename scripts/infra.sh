@@ -218,6 +218,19 @@ EOF
 
 install_redis() {
     info "Installing Redis via apt..."
+    # Wait for any background apt process to release the lock (e.g. unattended-upgrades)
+    local wait_sec=0
+    while fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+        if [ $wait_sec -eq 0 ]; then
+            info "Waiting for apt lock to be released..."
+        fi
+        sleep 5
+        wait_sec=$((wait_sec + 5))
+        if [ $wait_sec -ge 120 ]; then
+            error "apt lock not released after 120s, aborting"
+            exit 1
+        fi
+    done
     info "Updating apt package index..."
     apt-get update
     apt-get install -y redis-server
@@ -226,9 +239,11 @@ install_redis() {
     local conf="/etc/redis/redis.conf"
     sed -i "s/^port .*/port ${REDIS_PORT}/" "$conf"
     sed -i "s/^bind .*/bind 0.0.0.0/" "$conf"
+    sed -i "s/^protected-mode yes/protected-mode no/" "$conf"
 
-    # Ensure it's enabled and running
+    # Ensure it's enabled and running with the updated config
     systemctl enable redis-server
+    systemctl restart redis-server
     info "Redis installed (:${REDIS_PORT})"
 }
 
