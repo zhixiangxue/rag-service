@@ -64,4 +64,4 @@ echo "[3/3] Starting worker (python -m dramatiq worker.main)..."
 echo ""
 echo "========================================"
 echo ""
-python -m dramatiq worker.main
+python -m dramatiq worker.main --processes 1 --threads 1
