@@ -348,6 +348,8 @@ echo ""
 if $DEPLOY_WORKER; then
     echo -e "${GREEN}[5.5/9] Installing MinerU...${NC}"
     pip install "mineru[all]==3.0.1"
+    # albumentations is required by MinerU's formula recognition model but missing from its 3.0.1 deps
+    pip install albumentations
     echo ""
 fi
 

@@ -8,6 +8,7 @@ Start worker:
 import csv
 import gc
 import json
+import os
 import subprocess
 import sys
 import time
@@ -334,7 +335,8 @@ def process_document(task_id: str):
     console.print(f"[cyan]Spawning subprocess for task {task_id}...[/cyan]")
 
     start_time = datetime.now()
-    proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, env=env)
 
     # ── 8. Wait for subprocess, polling for cancel every 5 seconds ───────────
     CANCEL_POLL_INTERVAL = 5  # seconds
