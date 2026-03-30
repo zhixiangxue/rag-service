@@ -26,7 +26,7 @@ from rich.table import Table
 from .constants import TaskStatus
 from . import config
 
-console = Console()
+console = Console(force_terminal=True)
 
 # ── Broker ─────────────────────────────────────────────────────────────────────
 
