@@ -73,17 +73,18 @@ def verify_api_key(x_api_key: str = Header(default="")) -> None:
 # Create FastAPI app
 _dev_mode = os.getenv("DEV_MODE", "false").lower() == "true"
 
-# DOCS_TOKEN: when set, /docs /redoc /openapi.json require ?token=<value> in URL.
+# DOCS_TOKEN: when set, /docs and /openapi.json require ?token=<value> in URL.
 # Empty = docs disabled (DEV_MODE=false behavior). DEV_MODE=true overrides all checks.
 _docs_token = os.getenv("DOCS_TOKEN", "").strip()
 _docs_enabled = _dev_mode or bool(_docs_token)
 
+# Always disable built-in docs — served manually below so we can pass token to openapi_url
 app = FastAPI(
     title="RAG Service",
     description="RAG service layer built on top of Zag framework",
     version="0.2.0",
-    docs_url="/docs" if _docs_enabled else None,
-    redoc_url="/redoc" if _docs_enabled else None,
+    docs_url=None,
+    redoc_url=None,
 )
 
 # CORS middleware
@@ -100,9 +101,10 @@ _access_logger = logging.getLogger("rag.access")
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    # Guard docs routes with token when DOCS_TOKEN is set and not in dev mode
+    # Guard /openapi.json with token when DOCS_TOKEN is set and not in dev mode
+    # (/docs is handled by its own route below, which injects the token into openapi_url)
     if _docs_token and not _dev_mode:
-        if request.url.path in ("/docs", "/redoc", "/openapi.json"):
+        if request.url.path == "/openapi.json":
             if request.query_params.get("token") != _docs_token:
                 return HTMLResponse(status_code=403, content="403 Forbidden")
 
@@ -147,6 +149,19 @@ app.include_router(utility.router,     dependencies=_auth)
 async def root():
     """Redirect to API docs."""
     return RedirectResponse(url="/docs")
+
+
+if _docs_enabled:
+    from fastapi.openapi.docs import get_swagger_ui_html
+
+    @app.get("/docs", include_in_schema=False)
+    async def swagger_ui(token: str = ""):
+        """Serve Swagger UI, protected by DOCS_TOKEN when set."""
+        if _docs_token and not _dev_mode and token != _docs_token:
+            return HTMLResponse(status_code=403, content="403 Forbidden")
+        # Inject token into the openapi.json URL so Swagger UI can fetch the schema
+        openapi_url = f"/openapi.json?token={token}" if (_docs_token and not _dev_mode) else "/openapi.json"
+        return get_swagger_ui_html(openapi_url=openapi_url, title=app.title)
 
 
 # ── Startup dependency check (runs for both gunicorn and python -m app.main) ────
