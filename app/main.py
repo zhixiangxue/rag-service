@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request, Depends, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, HTMLResponse
 import os
 
 from .routers import datasets, documents, tasks, query, units, health, demo, graph, utility
@@ -72,12 +72,18 @@ def verify_api_key(x_api_key: str = Header(default="")) -> None:
 
 # Create FastAPI app
 _dev_mode = os.getenv("DEV_MODE", "false").lower() == "true"
+
+# DOCS_TOKEN: when set, /docs /redoc /openapi.json require ?token=<value> in URL.
+# Empty = docs disabled (DEV_MODE=false behavior). DEV_MODE=true overrides all checks.
+_docs_token = os.getenv("DOCS_TOKEN", "").strip()
+_docs_enabled = _dev_mode or bool(_docs_token)
+
 app = FastAPI(
     title="RAG Service",
     description="RAG service layer built on top of Zag framework",
     version="0.2.0",
-    docs_url="/docs" if _dev_mode else None,
-    redoc_url="/redoc" if _dev_mode else None,
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
 )
 
 # CORS middleware
@@ -94,6 +100,12 @@ _access_logger = logging.getLogger("rag.access")
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
+    # Guard docs routes with token when DOCS_TOKEN is set and not in dev mode
+    if _docs_token and not _dev_mode:
+        if request.url.path in ("/docs", "/redoc", "/openapi.json"):
+            if request.query_params.get("token") != _docs_token:
+                return HTMLResponse(status_code=403, content="403 Forbidden")
+
     t0 = time.perf_counter()
     response = await call_next(request)
     elapsed = time.perf_counter() - t0
