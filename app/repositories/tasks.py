@@ -89,15 +89,16 @@ class TaskRepository:
         status: str,
         progress: int,
         timestamp: str,
+        callback: Optional[str] = None,
     ) -> None:
         """Insert a new task row."""
         self._conn.execute(
             """
             INSERT INTO tasks
-                (id, dataset_id, doc_id, mode, reader, status, progress, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, dataset_id, doc_id, mode, reader, status, progress, callback, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (id, dataset_id, doc_id, mode, reader, status, progress, timestamp, timestamp),
+            (id, dataset_id, doc_id, mode, reader, status, progress, callback, timestamp, timestamp),
         )
         self._conn.commit()
 

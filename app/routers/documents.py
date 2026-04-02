@@ -8,6 +8,7 @@ import json
 import sqlite3
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 from zag.utils.hash import calculate_file_hash
 from ..utils.s3 import get_s3_object_info, download_file_from_s3_async
@@ -525,9 +526,23 @@ async def create_task(
     dataset_id: str,
     doc_id: str,
     mode: ProcessingMode = ProcessingMode.CLASSIC,
-    reader: ReaderType = ReaderType.MINERU
+    reader: ReaderType = ReaderType.MINERU,
+    callback: Optional[str] = None,
 ):
-    """Create a processing task for an existing document."""
+    """Create a processing task for an existing document.
+
+    Args:
+        callback: Optional webhook URL (http/https). Will receive a POST on terminal states.
+    """
+    # Validate callback URL when provided
+    if callback is not None:
+        parsed = urlparse(callback)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise HTTPException(
+                status_code=400,
+                detail="callback must be a valid http or https URL"
+            )
+
     conn = get_connection()
     doc_repo = DocumentRepository(conn)
     task_repo = TaskRepository(conn)
@@ -545,7 +560,7 @@ async def create_task(
 
     # Create Task record
     task_repo.create(task_id, dataset_id, doc_id, mode.value, reader.value,
-                     TaskStatus.PENDING, 0, timestamp)
+                     TaskStatus.PENDING, 0, timestamp, callback=callback)
 
     # Update document status and task_id
     doc_repo.update_task_link(doc_id, DocumentStatus.PROCESSING, task_id, timestamp)
@@ -566,6 +581,7 @@ async def create_task(
             reader=reader.value,
             status=TaskStatus.PENDING,
             progress=0,
+            callback=callback,
             metadata=doc_metadata,
             created_at=timestamp,
             updated_at=timestamp

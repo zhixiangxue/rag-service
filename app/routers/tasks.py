@@ -1,7 +1,11 @@
 """Task API endpoints."""
+import logging
+import threading
 from fastapi import APIRouter, HTTPException
 from typing import List, Optional
 import json
+import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
 
 from ..database import get_connection, now
 from ..repositories import TaskRepository, DocumentRepository
@@ -15,8 +19,34 @@ from ..schemas import (
 from ..constants import TaskStatus, DocumentStatus
 from ..worker import later
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["tasks"])
 
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+def _post_callback(url: str, payload: dict) -> None:
+    """POST callback payload to the given URL with tenacity retry (up to 5 attempts)."""
+    with httpx.Client(timeout=10.0) as client:
+        resp = client.post(url, json=payload)
+        resp.raise_for_status()
+
+
+def _dispatch_callback(url: str, payload: dict) -> None:
+    """Fire callback in a background thread; log and discard after 5 failed attempts."""
+    def _run():
+        try:
+            _post_callback(url, payload)
+            logger.info("Callback delivered: url=%s task_id=%s", url, payload.get("task_id"))
+        except Exception as exc:
+            logger.error(
+                "Callback permanently failed after 5 attempts: url=%s task_id=%s error=%s",
+                url, payload.get("task_id"), exc,
+            )
+    threading.Thread(target=_run, daemon=True).start()
 
 def _row_to_task_response(row: dict) -> TaskResponse:
     """Convert a task dict row to TaskResponse."""
@@ -29,6 +59,7 @@ def _row_to_task_response(row: dict) -> TaskResponse:
         reader=row.get("reader", ReaderType.DEFAULT),
         status=row["status"],
         progress=row["progress"],
+        callback=row.get("callback"),
         error_message=error_message,
         worker=row.get("worker"),
         created_at=row["created_at"],
@@ -186,6 +217,21 @@ def update_task(task_id: str, update: TaskStatusUpdate):
 
     row = task_repo.get(task_id)
     conn.close()
+
+    # Fire callback if task reached a terminal state
+    if update.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+        callback_url = row.get("callback") if row else None
+        if callback_url:
+            payload = {
+                "task_id": task_id,
+                "dataset_id": row["dataset_id"],
+                "doc_id": row["doc_id"],
+                "status": row["status"],
+                "progress": row["progress"],
+                "error_message": json.loads(row["error_message"]) if row.get("error_message") else None,
+                "timestamp": row["updated_at"],
+            }
+            _dispatch_callback(callback_url, payload)
 
     return ApiResponse(success=True, code=200, message="Task updated successfully",
                        data=_row_to_task_response(row))

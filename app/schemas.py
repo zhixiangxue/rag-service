@@ -96,6 +96,7 @@ class TaskResponse(BaseModel):
     reader: str = ReaderType.DEFAULT  # Reader used: mineru | claude
     status: str  # PENDING, PROCESSING, COMPLETED, FAILED
     progress: int  # 0-100
+    callback: Optional[str] = None  # Webhook URL to notify on terminal state
     metadata: Optional[Dict[str, Any]] = None  # Document metadata from upload
     error_message: Optional[Dict[str, Any]] = None
     worker: Optional[str] = None  # hostname (ip) of the worker that processed this task
