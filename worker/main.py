@@ -292,6 +292,16 @@ def process_document(task_id: str):
     # ── 1. Fetch task details ──────────────────────────────────────────────────
     try:
         task_data = _fetch_task(task_id)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            # Task no longer exists (document was deleted). Discard silently.
+            console.print(
+                f"[yellow]Task {task_id} not found (404) — document may have been deleted. "
+                f"Discarding task.[/yellow]"
+            )
+            return
+        console.print(f"[red]Failed to fetch task {task_id}: {e}[/red]")
+        raise RuntimeError(f"Could not fetch task details: {e}") from e
     except Exception as e:
         console.print(f"[red]Failed to fetch task {task_id}: {e}[/red]")
         raise RuntimeError(f"Could not fetch task details: {e}") from e

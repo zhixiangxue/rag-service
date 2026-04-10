@@ -2,6 +2,7 @@
 import logging
 import threading
 from fastapi import APIRouter, HTTPException
+from rich.console import Console
 from typing import List, Optional
 import json
 import httpx
@@ -20,6 +21,7 @@ from ..constants import TaskStatus, DocumentStatus
 from ..worker import later
 
 logger = logging.getLogger(__name__)
+console = Console(force_terminal=True)
 router = APIRouter(tags=["tasks"])
 
 @retry(
@@ -37,11 +39,26 @@ def _post_callback(url: str, payload: dict) -> None:
 
 def _dispatch_callback(url: str, payload: dict) -> None:
     """Fire callback in a background thread; log and discard after 5 failed attempts."""
+    console.print(
+        f"[bold cyan]>>> Callback firing[/bold cyan] "
+        f"task_id=[yellow]{payload.get('task_id')}[/yellow] "
+        f"status=[green]{payload.get('status')}[/green] "
+        f"url=[dim]{url}[/dim]"
+    )
     def _run():
         try:
             _post_callback(url, payload)
+            console.print(
+                f"[bold green]>>> Callback delivered[/bold green] "
+                f"task_id=[yellow]{payload.get('task_id')}[/yellow] url=[dim]{url}[/dim]"
+            )
             logger.info("Callback delivered: url=%s task_id=%s", url, payload.get("task_id"))
         except Exception as exc:
+            console.print(
+                f"[bold red]>>> Callback FAILED (5 attempts)[/bold red] "
+                f"task_id=[yellow]{payload.get('task_id')}[/yellow] "
+                f"url=[dim]{url}[/dim] error=[red]{exc}[/red]"
+            )
             logger.error(
                 "Callback permanently failed after 5 attempts: url=%s task_id=%s error=%s",
                 url, payload.get("task_id"), exc,
@@ -221,11 +238,17 @@ def update_task(task_id: str, update: TaskStatusUpdate):
     # Fire callback if task reached a terminal state
     if update.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
         callback_url = row.get("callback") if row else None
+        if not callback_url:
+            console.print(
+                f"[dim]>>> No callback URL for task_id=[yellow]{task_id}[/yellow] "
+                f"status=[green]{update.status}[/green][/dim]"
+            )
         if callback_url:
             payload = {
                 "task_id": task_id,
                 "dataset_id": row["dataset_id"],
                 "doc_id": row["doc_id"],
+                "mode": row["mode"],
                 "status": row["status"],
                 "progress": row["progress"],
                 "error_message": json.loads(row["error_message"]) if row.get("error_message") else None,
