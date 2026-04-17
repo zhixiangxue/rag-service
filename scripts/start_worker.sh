@@ -5,8 +5,6 @@ echo ""
 echo "========================================"
 echo "  RAG Worker Startup"
 echo "========================================"
-echo "API Endpoint: http://localhost:8000"
-echo "========================================"
 echo ""
 
 # Get script directory and navigate to rag-service root

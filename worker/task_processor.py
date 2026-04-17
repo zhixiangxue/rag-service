@@ -9,7 +9,6 @@ import asyncio
 import httpx
 import tempfile
 import gc
-import shutil
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -308,16 +307,6 @@ async def process_single_task(task: Dict[str, Any]) -> int:
                             console.print("[green]Task cancelled successfully[/green]")
         except Exception as e:
             console.print(f"[dim]Failed to cancel task in finally: {e}[/dim]")
-        
-        # Cleanup temporary files
-        if doc_info and "file_url" in doc_info and doc_info["file_url"] and temp_dir:
-            try:
-                if temp_dir.exists():
-                    import shutil
-                    shutil.rmtree(temp_dir)
-                    console.print("[dim]Temporary files cleaned up[/dim]")
-            except Exception as e:
-                console.print(f"[yellow]Failed to cleanup temp files: {e}[/yellow]")
         
         # Force cleanup (process will exit anyway)
         gc.collect()
