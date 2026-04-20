@@ -250,6 +250,14 @@ class ClassicDocumentProcessor:
         if not self.file_path.exists():
             raise FileNotFoundError(f"File not found: {self.file_path}")
 
+        # If document already loaded from checkpoint, skip re-reading
+        if self.document is not None:
+            console.print(
+                f"[dim]📄 Document already loaded from checkpoint "
+                f"({len(self.document.pages)} pages), skipping read[/dim]"
+            )
+            return self.document
+
         ext = self.file_path.suffix.lower()
         if ext == '.pdf':
             await self._read_pdf(max_pages_per_part, reader_name)
@@ -727,35 +735,43 @@ class ClassicDocumentProcessor:
             console.print(f"\n  Stage 3: Enriching TableUnits with LLM...")
             from zag.extractors import TableEnrichMode
 
-            enricher = TableEnricher(llm_uri=llm_uri, api_key=api_key)
-            enriched_tables = await enricher.aextract(
-                table_units,
-                mode=TableEnrichMode.CRITICAL_ONLY  # Judge all, enrich only critical tables
-            )
-            console.print(f"  ✅ Enriched {len(enriched_tables)} TableUnits")
+            try:
+                enricher = TableEnricher(llm_uri=llm_uri, api_key=api_key)
+                enriched_tables = await enricher.aextract(
+                    table_units,
+                    mode=TableEnrichMode.CRITICAL_ONLY  # Judge all, enrich only critical tables
+                )
+                console.print(f"  ✅ Enriched {len(enriched_tables)} TableUnits")
 
-            # Count critical tables
-            critical_count = sum(
-                1 for u in enriched_tables
-                if u.metadata.custom.get("table", {}).get("is_data_critical", False)
-            )
-            console.print(
-                f"  📊 {critical_count}/{len(enriched_tables)} tables are data-critical")
-
-            # Show sample
-            console.print("\n  Sample enriched tables (first 3):")
-            for i, table_unit in enumerate(enriched_tables[:3], 1):
-                meta_table = (table_unit.metadata.custom or {}
-                              ).get("table", {})
-                is_critical = meta_table.get("is_data_critical", False)
+                # Count critical tables
+                critical_count = sum(
+                    1 for u in enriched_tables
+                    if u.metadata.custom.get("table", {}).get("is_data_critical", False)
+                )
                 console.print(
-                    f"    {i}. shape: {table_unit.df.shape}, critical: {is_critical}")
-                if is_critical and table_unit.caption:
-                    console.print(
-                        f"       caption: {table_unit.caption[:60]}...")
+                    f"  📊 {critical_count}/{len(enriched_tables)} tables are data-critical")
 
-            # Use enriched tables
-            table_units = enriched_tables
+                # Show sample
+                console.print("\n  Sample enriched tables (first 3):")
+                for i, table_unit in enumerate(enriched_tables[:3], 1):
+                    meta_table = (table_unit.metadata.custom or {}
+                                  ).get("table", {})
+                    is_critical = meta_table.get("is_data_critical", False)
+                    console.print(
+                        f"    {i}. shape: {table_unit.df.shape}, critical: {is_critical}")
+                    if is_critical and table_unit.caption:
+                        console.print(
+                            f"       caption: {table_unit.caption[:60]}...")
+
+                # Use enriched tables
+                table_units = enriched_tables
+
+            except Exception as e:
+                console.print(
+                    f"  [yellow]⚠️  Stage 3 enrichment failed: {e}[/yellow]")
+                console.print(
+                    f"  [yellow]   Falling back to original table text (no LLM enrichment)[/yellow]")
+                # table_units remains as the original parsed tables
         else:
             console.print(f"\n  ⚠️  No tables found in document")
 
