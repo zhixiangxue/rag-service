@@ -15,8 +15,9 @@ class ProcessingMode(str, Enum):
 
 class ReaderType(str, Enum):
     """Document reader type for parsing."""
-    DEFAULT = "mineru"
-    MINERU = "mineru"    # MinerU reader (GPU-accelerated, default)
+    DEFAULT = "pymupdf4llm"
+    PYMUPDF4LLM = "pymupdf4llm"  # PyMuPDF4LLM + Claude table enhancement (default)
+    MINERU = "mineru"    # MinerU reader (GPU-accelerated)
     CLAUDE = "claude"    # Claude Vision reader (API-based, high quality)
 
 

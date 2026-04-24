@@ -314,7 +314,7 @@ class ClassicDocumentProcessor:
             range_str = (
                 f" (pages {page_range[0]}-{page_range[1]})" if page_range else ""
             )
-            if reader_name == "claude":
+            if reader_name == ReaderType.CLAUDE:
                 from zag.readers import ClaudeVisionReader
                 from ..config import ANTHROPIC_API_KEY
 
@@ -322,6 +322,17 @@ class ClassicDocumentProcessor:
                     f"[yellow]Claude Vision: {self.file_path.name}{range_str}[/yellow]"
                 )
                 reader = ClaudeVisionReader(api_key=ANTHROPIC_API_KEY)
+                doc = reader.read(str(self.file_path), page_range=page_range)
+            elif reader_name == ReaderType.PYMUPDF4LLM:
+                from zag.readers import PyMuPDF4LLMReader
+                from ..config import ANTHROPIC_API_KEY
+
+                console.print(
+                    f"PyMuPDF4LLM + Claude table enhancement{range_str}: {self.file_path.name}"
+                )
+                reader = PyMuPDF4LLMReader(
+                    enhance_tables=True, anthropic_api_key=ANTHROPIC_API_KEY
+                )
                 doc = reader.read(str(self.file_path), page_range=page_range)
             else:
                 console.print(
@@ -550,6 +561,27 @@ class ClassicDocumentProcessor:
         import tiktoken
         tokenizer = tiktoken.get_encoding("cl100k_base")
         token_counts = [len(tokenizer.encode(u.content)) for u in units]
+
+        # Sanity check: total split tokens must be at least 50% of source tokens.
+        # A much lower ratio indicates a split failure (e.g. content silently dropped).
+        source_tokens = len(tokenizer.encode(self.document.content))
+        if source_tokens == 0:
+            raise ValueError(
+                "Source document is empty (0 tokens). "
+                "Document parsing likely failed — aborting split."
+            )
+        split_tokens = sum(token_counts)
+        coverage = split_tokens / source_tokens
+        console.print(
+            f"   - Source tokens: {source_tokens:,}, split tokens: {split_tokens:,} "
+            f"(coverage {coverage:.1%})"
+        )
+        if coverage < 0.5:
+            raise ValueError(
+                f"Split coverage too low: split produced {split_tokens:,} tokens "
+                f"from {source_tokens:,} source tokens ({coverage:.1%}). "
+                "This likely indicates a split failure — aborting to prevent data loss."
+            )
 
         console.print(f"\n✅ Split complete ({elapsed:.2f}s):")
         console.print(f"   - Total units: {len(units)}")

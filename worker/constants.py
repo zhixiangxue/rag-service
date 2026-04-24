@@ -19,6 +19,7 @@ class ProcessingMode:
 
 class ReaderType:
     """Document reader type constants."""
-    DEFAULT = "mineru"  # Change this to switch the global default reader
+    DEFAULT = "pymupdf4llm"  # Change this to switch the global default reader
+    PYMUPDF4LLM = "pymupdf4llm"
     MINERU = "mineru"
     CLAUDE = "claude"

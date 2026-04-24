@@ -526,7 +526,7 @@ async def create_task(
     dataset_id: str,
     doc_id: str,
     mode: ProcessingMode = ProcessingMode.CLASSIC,
-    reader: ReaderType = ReaderType.MINERU,
+    reader: ReaderType = ReaderType.PYMUPDF4LLM,
     callback: Optional[str] = None,
 ):
     """Create a processing task for an existing document.

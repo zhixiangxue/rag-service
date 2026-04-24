@@ -13,13 +13,17 @@ Usage:
 
 import asyncio
 import os
+import sys
 from pathlib import Path
 from datetime import datetime
+
+# Allow running directly: python debug_classic.py
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # rag-service root
 
 from rich.console import Console
 from rich.panel import Panel
 
-from .. import config
+from worker import config
 
 # Force localhost BEFORE importing indexer
 def force_localhost_config():
@@ -32,10 +36,7 @@ def force_localhost_config():
 force_localhost_config()
 
 # NOW import indexer (after config modification)
-from ..indexers.classic import index_classic
-
-# Validate services before proceeding
-config.validate_services()
+from worker.indexers.classic import index_classic
 
 # ========== Configuration ==========
 DEBUG_WORKSPACE_ROOT = Path("./.workspace/debug")
