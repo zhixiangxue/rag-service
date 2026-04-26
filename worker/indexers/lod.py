@@ -181,6 +181,10 @@ async def index_lod(
         pdf_reader_obj = ClaudeVisionReader(api_key=ANTHROPIC_API_KEY)
         doc = pdf_reader_obj.read(str(file_path))
         # Claude output is already well-structured, skip HeadingCorrector
+    elif reader_name == ReaderType.PYMUPDF4LLM:
+        from zag.readers import PyMuPDF4LLMReader
+        pdf_reader_obj = PyMuPDF4LLMReader()
+        doc = pdf_reader_obj.read(str(file_path))
     else:
         pdf_reader_obj = MinerUReader(backend="pipeline")
         doc = pdf_reader_obj.read(str(file_path))
