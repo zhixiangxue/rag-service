@@ -171,7 +171,12 @@ async def index_lod(
     console.print(f"  Pages: {page_count} (✓ within limit)")
     
     # Step 2: Read PDF
-    reader_label = "Claude Vision" if reader_name == ReaderType.CLAUDE else "MinerU"
+    if reader_name == ReaderType.CLAUDE:
+        reader_label = "Claude Vision"
+    elif reader_name == ReaderType.PYMUPDF4LLM:
+        reader_label = "PyMuPDF4LLM"
+    else:
+        reader_label = "MinerU"
     console.print(f"[yellow]Step 2: Reading PDF with {reader_label}...[/yellow]")
     if on_progress:
         await on_progress(10)
