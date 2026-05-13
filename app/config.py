@@ -133,6 +133,12 @@ API_PUBLIC_HOST = os.getenv("API_PUBLIC_HOST") or (
 )
 
 # ============================================
+# Evaluation Service Configuration
+# ============================================
+# Optional: POST doc_id + file URL to this service after document processing completes
+EVAL_SERVICE_URL = os.getenv("EVAL_SERVICE_URL")  # Optional, leave empty to disable
+
+# ============================================
 # Redis / Dramatiq Configuration
 # ============================================
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")

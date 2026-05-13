@@ -2,7 +2,6 @@
 import logging
 import threading
 from fastapi import APIRouter, HTTPException
-from rich.console import Console
 from typing import List, Optional
 import json
 import httpx
@@ -19,9 +18,9 @@ from ..schemas import (
 )
 from ..constants import TaskStatus, DocumentStatus
 from ..worker import later
+from ..config import EVAL_SERVICE_URL
 
 logger = logging.getLogger(__name__)
-console = Console(force_terminal=True)
 router = APIRouter(tags=["tasks"])
 
 @retry(
@@ -30,39 +29,57 @@ router = APIRouter(tags=["tasks"])
     before_sleep=before_sleep_log(logger, logging.WARNING),
     reraise=True,
 )
-def _post_callback(url: str, payload: dict) -> None:
+def _post_admin(url: str, payload: dict) -> None:
     """POST callback payload to the given URL with tenacity retry (up to 5 attempts)."""
     with httpx.Client(timeout=10.0) as client:
         resp = client.post(url, json=payload)
         resp.raise_for_status()
 
 
-def _dispatch_callback(url: str, payload: dict) -> None:
-    """Fire callback in a background thread; log and discard after 5 failed attempts."""
-    console.print(
-        f"[bold cyan]>>> Callback firing[/bold cyan] "
-        f"task_id=[yellow]{payload.get('task_id')}[/yellow] "
-        f"status=[green]{payload.get('status')}[/green] "
-        f"url=[dim]{url}[/dim]"
-    )
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+def _post_eval_request(url: str, payload: dict) -> None:
+    """POST evaluation payload to the given URL with tenacity retry (up to 5 attempts)."""
+    with httpx.Client(timeout=10.0) as client:
+        resp = client.post(url, json=payload)
+        resp.raise_for_status()
+
+
+# Default number of evaluation cases per document (valid range: 1-20).
+DEFAULT_EVAL_NUM_CASES = 20
+
+
+def _trigger_eval(doc_id: str, s3_uri: str, num_cases: int = DEFAULT_EVAL_NUM_CASES) -> None:
+    """Notify the evaluation service in a background thread; log and discard after 5 failed attempts."""
+    if not EVAL_SERVICE_URL:
+        return
+    if not s3_uri or not s3_uri.startswith("s3://"):
+        logger.warning("[EVAL] --- skip  doc_id=%s reason=not an s3 uri  value=%s", doc_id, s3_uri)
+        return
+    payload = {"doc_id": doc_id, "s3_uri": s3_uri, "num_cases": num_cases}
+    logger.info("[EVAL] >>> firing  doc_id=%s s3_uri=%s num_cases=%s url=%s", doc_id, s3_uri, num_cases, EVAL_SERVICE_URL)
     def _run():
         try:
-            _post_callback(url, payload)
-            console.print(
-                f"[bold green]>>> Callback delivered[/bold green] "
-                f"task_id=[yellow]{payload.get('task_id')}[/yellow] url=[dim]{url}[/dim]"
-            )
-            logger.info("Callback delivered: url=%s task_id=%s", url, payload.get("task_id"))
+            _post_eval_request(EVAL_SERVICE_URL, payload)
+            logger.info("[EVAL] +++ delivered  doc_id=%s", doc_id)
         except Exception as exc:
-            console.print(
-                f"[bold red]>>> Callback FAILED (5 attempts)[/bold red] "
-                f"task_id=[yellow]{payload.get('task_id')}[/yellow] "
-                f"url=[dim]{url}[/dim] error=[red]{exc}[/red]"
-            )
-            logger.error(
-                "Callback permanently failed after 5 attempts: url=%s task_id=%s error=%s",
-                url, payload.get("task_id"), exc,
-            )
+            logger.error("[EVAL] xxx failed (5 attempts)  doc_id=%s error=%s", doc_id, exc)
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _notify_admin(url: str, payload: dict) -> None:
+    """Fire callback in a background thread; log and discard after 5 failed attempts."""
+    logger.info("[CALLBACK] >>> firing  task_id=%s status=%s url=%s", payload.get("task_id"), payload.get("status"), url)
+    def _run():
+        try:
+            _post_admin(url, payload)
+            logger.info("[CALLBACK] +++ delivered  task_id=%s", payload.get("task_id"))
+        except Exception as exc:
+            logger.error("[CALLBACK] xxx failed (5 attempts)  task_id=%s error=%s", payload.get("task_id"), exc)
     threading.Thread(target=_run, daemon=True).start()
 
 def _row_to_task_response(row: dict) -> TaskResponse:
@@ -233,16 +250,14 @@ def update_task(task_id: str, update: TaskStatusUpdate):
         doc_repo.update_status(doc_id, DocumentStatus.PROCESSING, timestamp)
 
     row = task_repo.get(task_id)
+    doc_row = doc_repo.get(doc_id) if update.status == TaskStatus.COMPLETED else None
     conn.close()
 
     # Fire callback if task reached a terminal state
     if update.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
         callback_url = row.get("callback") if row else None
         if not callback_url:
-            console.print(
-                f"[dim]>>> No callback URL for task_id=[yellow]{task_id}[/yellow] "
-                f"status=[green]{update.status}[/green][/dim]"
-            )
+            logger.debug("[CALLBACK] --- no callback URL  task_id=%s status=%s", task_id, update.status)
         if callback_url:
             payload = {
                 "task_id": task_id,
@@ -254,7 +269,12 @@ def update_task(task_id: str, update: TaskStatusUpdate):
                 "error_message": json.loads(row["error_message"]) if row.get("error_message") else None,
                 "timestamp": row["updated_at"],
             }
-            _dispatch_callback(callback_url, payload)
+            _notify_admin(callback_url, payload)
+
+    # Notify evaluation service on completion
+    if update.status == TaskStatus.COMPLETED and doc_row:
+        s3_uri = doc_row.get("file_path") or ""
+        _trigger_eval(doc_id, s3_uri)
 
     return ApiResponse(success=True, code=200, message="Task updated successfully",
                        data=_row_to_task_response(row))
