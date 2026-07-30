@@ -15,6 +15,10 @@
 #   so it works even when piped). For non-interactive installs, pass the
 #   password via environment variable instead:
 #   curl -fsSL https://raw.githubusercontent.com/zhixiangxue/rag-service/main/scripts/infra.sh | sudo INFRA_PASSWORD=xxx bash -s -- --install
+#
+#   If GitHub releases are slow/unreachable (e.g. servers in mainland China),
+#   prepend a proxy via GITHUB_MIRROR:
+#   curl -fsSL https://raw.githubusercontent.com/zhixiangxue/rag-service/main/scripts/infra.sh | sudo GITHUB_MIRROR=https://ghfast.top/ INFRA_PASSWORD=xxx bash -s -- --install
 
 set -e
 
@@ -107,6 +111,27 @@ prompt_password() {
     fi
 }
 
+# GitHub download proxy prefix, for regions where GitHub releases are slow/blocked.
+# Usage: GITHUB_MIRROR=https://ghfast.top/ sudo ./infra.sh --install
+# The mirror is prepended to the full GitHub URL: https://ghfast.top/https://github.com/...
+GITHUB_MIRROR="${GITHUB_MIRROR:-}"
+
+# download <url> <output-file>
+# Shows progress, fails fast on dead connections instead of hanging forever.
+# </dev/null keeps wget from eating the script itself when piped (curl | bash).
+download() {
+    local url="$1" out="$2"
+    if [[ -n "$GITHUB_MIRROR" ]]; then
+        url="${GITHUB_MIRROR%/}/${url}"
+    fi
+    info "Downloading: $url"
+    wget --progress=dot:giga --connect-timeout=15 --read-timeout=60 --tries=3 \
+        -O "$out" "$url" </dev/null \
+        || error "Download failed: $url
+    If GitHub is unreachable from this server, retry with a mirror:
+    curl -fsSL ... | sudo GITHUB_MIRROR=https://ghfast.top/ INFRA_PASSWORD=xxx bash -s -- --install"
+}
+
 # ============================================================
 # Install helpers
 # ============================================================
@@ -120,7 +145,7 @@ install_qdrant() {
     local dest="${ZAG_DIR}/qdrant"
     mkdir -p "$dest/data" "$dest/snapshots"
 
-    wget -qO /tmp/qdrant.tar.gz "$url"
+    download "$url" /tmp/qdrant.tar.gz
     tar -xzf /tmp/qdrant.tar.gz -C "$dest"
     chmod +x "$dest/qdrant"
 
@@ -183,7 +208,7 @@ install_meilisearch() {
     mkdir -p "$dest/data" "$dest/dumps" "$dest/snapshots"
 
     # Single binary, no archive to extract
-    wget -qO "$dest/meilisearch" "$url"
+    download "$url" "$dest/meilisearch"
     chmod +x "$dest/meilisearch"
 
     # Master key = shared infra password
@@ -235,7 +260,7 @@ install_rqlite() {
     local ver_strip="${RQLITE_VERSION}"  # keep v prefix, matches folder name
     mkdir -p "$dest/data"
 
-    wget -qO /tmp/rqlite.tar.gz "$url"
+    download "$url" /tmp/rqlite.tar.gz
     tar -xzf /tmp/rqlite.tar.gz -C /tmp
     # Extracted folder: rqlite-v9.4.5-linux-amd64/
     mv /tmp/rqlite-${ver_strip}-linux-${arch}/rqlited "$dest/rqlited"
@@ -355,7 +380,7 @@ install_falkordb() {
         apt-get install -y -qq build-essential
 
         local redis_url="https://github.com/redis/redis/archive/refs/tags/${REDIS_SRC_VERSION}.tar.gz"
-        wget -qO /tmp/redis.tar.gz "$redis_url"
+        download "$redis_url" /tmp/redis.tar.gz
         tar -xzf /tmp/redis.tar.gz -C /tmp
         (
             cd /tmp/redis-${REDIS_SRC_VERSION}
@@ -379,7 +404,7 @@ install_falkordb() {
     local url="https://github.com/FalkorDB/FalkorDB/releases/download/${FALKORDB_VERSION}/${so_file}"
 
     info "Downloading ${so_file}..."
-    wget -qO "${dest}/${so_file}" "$url"
+    download "$url" "${dest}/${so_file}"
 
     if [[ ! -f "${dest}/${so_file}" ]]; then
         error "Download failed: ${so_file} not found."
