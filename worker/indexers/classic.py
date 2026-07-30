@@ -10,6 +10,7 @@ from ..config import (
     LLM_PROVIDER, LLM_MODEL, LLM_API_KEY,
     EMBEDDING_URI, OPENAI_API_KEY,
     VECTOR_STORE_HOST, VECTOR_STORE_PORT,
+    VECTOR_STORE_API_KEY,
     MEILISEARCH_HOST, MEILISEARCH_API_KEY,
     USE_GPU, NUM_THREADS,
     MAX_CHUNK_TOKENS, TABLE_MAX_TOKENS, TARGET_TOKEN_SIZE,
@@ -159,7 +160,8 @@ async def index_classic(
         qdrant_port=VECTOR_STORE_PORT,
         qdrant_grpc_port=vector_store_grpc_port,
         collection_name=collection_name,
-        api_key=OPENAI_API_KEY
+        api_key=OPENAI_API_KEY,
+        qdrant_api_key=VECTOR_STORE_API_KEY
     )
     console.print(f"  ✅ Vector index built")
     await report_progress(90)

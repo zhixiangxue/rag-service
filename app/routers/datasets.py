@@ -149,7 +149,8 @@ def _ensure_vector_collection(collection_name: str, engine: str):
         grpc_port=config.VECTOR_STORE_GRPC_PORT,
         prefer_grpc=True,
         collection_name=collection_name,
-        embedder=embedder
+        embedder=embedder,
+        api_key=config.VECTOR_STORE_API_KEY,
     )
 
 
@@ -345,7 +346,8 @@ def delete_dataset(dataset_id: str):
             grpc_port=config.VECTOR_STORE_GRPC_PORT,
             prefer_grpc=True,
             collection_name=collection_name,
-            embedder=embedder
+            embedder=embedder,
+            api_key=config.VECTOR_STORE_API_KEY,
         )
         vector_store.delete_collection()
     except Exception as e:

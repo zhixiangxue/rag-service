@@ -18,7 +18,7 @@ from domain.mortgage.graph import FullExtractionResult
 from worker.constants import ProcessingMode
 from worker.config import (
     LLM_PROVIDER, LLM_MODEL, LLM_API_KEY,
-    FALKORDB_HOST, FALKORDB_PORT,
+    FALKORDB_HOST, FALKORDB_PORT, FALKORDB_PASSWORD,
     MAX_PAGES_PER_PART,
 )
 from zag.utils.hash import calculate_file_hash
@@ -174,6 +174,7 @@ async def index_graph(
         host=FALKORDB_HOST,
         port=FALKORDB_PORT,
         graph_name=graph_name,
+        password=FALKORDB_PASSWORD,
     )
     with base_storage:
         mortgage_storage = MortgageGraphStorage(base_storage)

@@ -57,6 +57,7 @@ VECTOR_STORE_TYPE = require_env("VECTOR_STORE_TYPE")
 VECTOR_STORE_HOST = require_env("VECTOR_STORE_HOST")
 VECTOR_STORE_PORT = int(require_env("VECTOR_STORE_PORT"))
 VECTOR_STORE_GRPC_PORT = int(require_env("VECTOR_STORE_GRPC_PORT"))
+VECTOR_STORE_API_KEY = os.getenv("VECTOR_STORE_API_KEY") or None  # Optional (qdrant api_key)
 
 # ============================================
 # Full-Text Search Configuration
@@ -67,8 +68,10 @@ MEILISEARCH_API_KEY = os.getenv("MEILISEARCH_API_KEY")  # Optional
 # ============================================
 # Graph Database Configuration
 # ============================================
-#FALKORDB_HOST = require_env("FALKORDB_HOST")
-#FALKORDB_PORT = int(require_env("FALKORDB_PORT"))
+# Used by the /graph router (FalkorDB); optional with sane defaults
+FALKORDB_HOST = os.getenv("FALKORDB_HOST", "localhost")
+FALKORDB_PORT = int(os.getenv("FALKORDB_PORT", "6379"))
+FALKORDB_PASSWORD = os.getenv("FALKORDB_PASSWORD") or None  # Optional
 
 # ============================================
 # Embedding & Reranker Configuration
@@ -143,3 +146,4 @@ EVAL_SERVICE_URL = os.getenv("EVAL_SERVICE_URL")  # Optional, leave empty to dis
 # ============================================
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6380"))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None  # Optional

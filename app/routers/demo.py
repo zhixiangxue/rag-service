@@ -34,7 +34,8 @@ def _create_retriever(collection_name: str):
         prefer_grpc=False,
         collection_name=collection_name,
         embedder=embedder,
-        timeout=180  # 3 minutes for slow LLM pipeline
+        timeout=180,  # 3 minutes for slow LLM pipeline
+        api_key=config.VECTOR_STORE_API_KEY,
     )
     return VectorRetriever(vector_store=vector_store, top_k=TOP_K)
 

@@ -166,6 +166,12 @@ if _docs_enabled:
 
 # ── Startup dependency check (runs for both gunicorn and python -m app.main) ────
 
+def _mask_uri(uri: str) -> str:
+    """Hide password in URIs like http://user:pass@host:port for safe logging."""
+    import re
+    return re.sub(r"//([^:/@]+):[^@]+@", r"//\1:***@", uri)
+
+
 def check_dependencies() -> bool:
     """Check DB, Qdrant, Redis, and Meilisearch. Fail-fast: stops on first failure and marks rest as skipped."""
     import requests as _requests
@@ -184,10 +190,10 @@ def check_dependencies() -> bool:
             try:
                 resp = _requests.get(f"{db_uri.rstrip('/')}/status", timeout=5)
                 resp.raise_for_status()
-                return True, f"[DB] rqlite reachable: {db_uri}"
+                return True, f"[DB] rqlite reachable: {_mask_uri(db_uri)}"
             except Exception as exc:
                 return False, f"[DB] Cannot connect to rqlite: {exc}"
-        return False, f"[DB] Unrecognised DB URI scheme: {db_uri}"
+        return False, f"[DB] Unrecognised DB URI scheme: {_mask_uri(db_uri)}"
 
     def _check_qdrant():
         qdrant_url = f"http://{config.VECTOR_STORE_HOST}:{config.VECTOR_STORE_PORT}"
@@ -204,6 +210,7 @@ def check_dependencies() -> bool:
             r = _redis.Redis(
                 host=config.REDIS_HOST,
                 port=config.REDIS_PORT,
+                password=config.REDIS_PASSWORD,
                 socket_timeout=5,
                 socket_connect_timeout=5,
             )
@@ -255,7 +262,7 @@ if __name__ == "__main__":
         print("  RAG Service Configuration Summary")
         print("=" * 60)
         print(f"\n[Database]")
-        print(f"  DATABASE_URI: {config.DATABASE_URI}")
+        print(f"  DATABASE_URI: {_mask_uri(config.DATABASE_URI)}")
         print(f"\n[Cache]")
         _pdf_dir = os.path.abspath(config.PDF_FILES_DIR)
         _pdf_count = len(os.listdir(_pdf_dir)) if os.path.isdir(_pdf_dir) else 0

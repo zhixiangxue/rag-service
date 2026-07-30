@@ -64,6 +64,7 @@ def _get_vector_store(collection_name: str) -> Any:
             collection_name=collection_name,
             embedder=_get_embedder(),
             timeout=60,
+            api_key=config.VECTOR_STORE_API_KEY,
         )
     return _vector_store_cache[collection_name]
 

@@ -116,18 +116,21 @@ VECTOR_STORE_TYPE = require_env("VECTOR_STORE_TYPE", "qdrant")
 VECTOR_STORE_HOST = require_env("VECTOR_STORE_HOST", "localhost")
 VECTOR_STORE_PORT = int(require_env("VECTOR_STORE_PORT", "6333"))
 VECTOR_STORE_GRPC_PORT = int(require_env("VECTOR_STORE_GRPC_PORT", "6334"))
+VECTOR_STORE_API_KEY = os.getenv("VECTOR_STORE_API_KEY") or None  # Optional (qdrant api_key)
 
 # ============================================
 # Graph Database Configuration
 # ============================================
 FALKORDB_HOST = require_env("FALKORDB_HOST", "localhost")
 FALKORDB_PORT = int(require_env("FALKORDB_PORT", "6379"))
+FALKORDB_PASSWORD = os.getenv("FALKORDB_PASSWORD") or None  # Optional
 
 # ============================================
 # Redis / Dramatiq Configuration
 # ============================================
 REDIS_HOST = require_env("REDIS_HOST", "localhost")
 REDIS_PORT = int(require_env("REDIS_PORT", "6380"))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None  # Optional
 
 # ============================================
 # AWS S3 Configuration (used by task_processor to download S3-hosted files)

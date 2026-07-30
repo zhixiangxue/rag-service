@@ -126,6 +126,7 @@ def _get_storage() -> MortgageGraphStorage:
         host=config.FALKORDB_HOST,
         port=config.FALKORDB_PORT,
         graph_name="mortgage_programs",
+        password=config.FALKORDB_PASSWORD,
     )
     return MortgageGraphStorage(base_storage)
 

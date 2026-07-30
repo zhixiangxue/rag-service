@@ -26,8 +26,8 @@ class Later:
         later.add(10, 20)
     """
 
-    def __init__(self, host: str, port: int, default_queue: str = "default"):
-        self._broker = RedisBroker(host=host, port=port)
+    def __init__(self, host: str, port: int, password: str = None, default_queue: str = "default"):
+        self._broker = RedisBroker(host=host, port=port, password=password)
         self._default_queue = default_queue
 
     def __getattr__(self, actor_name: str):
@@ -48,4 +48,4 @@ class Later:
         return _enqueue
 
 
-later = Later(host=config.REDIS_HOST, port=config.REDIS_PORT)
+later = Later(host=config.REDIS_HOST, port=config.REDIS_PORT, password=config.REDIS_PASSWORD)

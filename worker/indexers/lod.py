@@ -22,6 +22,7 @@ from ..config import (
     LLM_PROVIDER, LLM_MODEL, LLM_API_KEY,
     EMBEDDING_URI, OPENAI_API_KEY,
     VECTOR_STORE_HOST, VECTOR_STORE_PORT,
+    VECTOR_STORE_API_KEY,
     MEILISEARCH_HOST, MEILISEARCH_API_KEY,
     ARCHIVES_DIR,
     ANTHROPIC_API_KEY,
@@ -345,7 +346,8 @@ async def index_lod(
         grpc_port=vector_store_grpc_port,
         collection_name=collection_name,
         embedder=embedder,
-        timeout=60
+        timeout=60,
+        api_key=VECTOR_STORE_API_KEY,
     )
     
     # Clear existing data for this document before indexing

@@ -34,12 +34,15 @@ def get_connection():
         return conn
 
     # rqlite: http:// or https://
+    # Credentials can be embedded in the URI: http://user:pass@host:4001
     from .pyrqlite import dbapi2
     parsed = urlparse(DATABASE_URI)
     return dbapi2.connect(
         scheme=parsed.scheme,
         host=parsed.hostname,
         port=parsed.port or 4001,
+        user=parsed.username,
+        password=parsed.password,
     )
 
 

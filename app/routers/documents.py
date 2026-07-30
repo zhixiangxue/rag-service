@@ -766,6 +766,7 @@ def get_document_views(
             prefer_grpc=True,
             collection_name=collection_name,
             embedder=embedder,
+            api_key=config.VECTOR_STORE_API_KEY,
         )
         units = vector_store.fetch({
             "doc_id": doc_id,
@@ -1071,7 +1072,8 @@ def delete_document(dataset_id: str, doc_id: str):
             grpc_port=config.VECTOR_STORE_GRPC_PORT,
             prefer_grpc=True,
             collection_name=collection_name,
-            embedder=embedder
+            embedder=embedder,
+            api_key=config.VECTOR_STORE_API_KEY,
         )
         vector_store.remove({"doc_id": doc_id})
     except Exception as e:

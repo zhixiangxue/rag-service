@@ -58,6 +58,7 @@ def _get_vector_store(dataset_id: str, with_embedder: bool = False):
                 collection_name=collection_name,
                 embedder=embedder,
                 timeout=60,
+                api_key=config.VECTOR_STORE_API_KEY,
             )
         # Reuse the process-level cached connection from query.py.
         return _get_cached_vector_store(collection_name)

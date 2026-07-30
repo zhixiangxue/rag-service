@@ -890,7 +890,8 @@ class ClassicDocumentProcessor:
         qdrant_port: int = 6333,
         qdrant_grpc_port: int = 6334,
         collection_name: str = "debug_collection",
-        api_key: Optional[str] = None
+        api_key: Optional[str] = None,
+        qdrant_api_key: Optional[str] = None
     ) -> VectorIndexer:
         """
         Build vector index with Qdrant (with automatic retry)
@@ -902,6 +903,7 @@ class ClassicDocumentProcessor:
             qdrant_grpc_port: Qdrant gRPC port (for high performance)
             collection_name: Collection name
             api_key: API key for embedding service (if needed)
+            qdrant_api_key: API key for Qdrant server auth (if enabled)
 
         Returns:
             VectorIndexer instance
@@ -932,7 +934,8 @@ class ClassicDocumentProcessor:
             prefer_grpc=True,
             timeout=300,  # 5 minutes timeout for large batch operations
             collection_name=collection_name,
-            embedder=embedder
+            embedder=embedder,
+            api_key=qdrant_api_key
         )
 
         vector_indexer = VectorIndexer(vector_store=vector_store)

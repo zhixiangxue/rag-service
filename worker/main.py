@@ -30,7 +30,7 @@ console = Console(force_terminal=True)
 
 # ── Broker ─────────────────────────────────────────────────────────────────────
 
-broker = RedisBroker(host=config.REDIS_HOST, port=config.REDIS_PORT)
+broker = RedisBroker(host=config.REDIS_HOST, port=config.REDIS_PORT, password=config.REDIS_PASSWORD)
 dramatiq.set_broker(broker)
 
 
@@ -71,6 +71,7 @@ def _check_worker_dependencies() -> None:
             r = _redis.Redis(
                 host=config.REDIS_HOST,
                 port=config.REDIS_PORT,
+                password=config.REDIS_PASSWORD,
                 socket_timeout=5,
                 socket_connect_timeout=5,
             )
