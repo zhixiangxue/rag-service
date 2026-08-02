@@ -22,6 +22,8 @@ PyPDF2>=3.0.0
 rich>=13.0.0
 cohere>=5.20.2
 dramatiq[redis]>=1.15.0
+# pdfminer.six required by zag HeadingExtractor/HeadingCorrector (not declared by zagpy)
+pdfminer.six>=20231228
 
 # LLM client (for demo endpoint)
 chakpy>=0.1.0
