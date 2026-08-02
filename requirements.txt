@@ -18,12 +18,16 @@ python-dotenv>=1.0.0
 
 # Worker dependencies
 schedule>=1.2.0
-PyPDF2>=3.0.0
+pypdf>=4.0.0
 rich>=13.0.0
 cohere>=5.20.2
 dramatiq[redis]>=1.15.0
 # pdfminer.six required by zag HeadingExtractor/HeadingCorrector (not declared by zagpy)
 pdfminer.six>=20231228
+# Additional runtime deps used directly
+tiktoken>=0.7.0
+openpyxl>=3.1.0
+loguru>=0.7.0
 
 # LLM client (for demo endpoint)
 chakpy>=0.1.0

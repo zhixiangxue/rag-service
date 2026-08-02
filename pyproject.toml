@@ -22,7 +22,7 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "python-dotenv>=1.0.0",
     "schedule>=1.2.0",
-    "PyPDF2>=3.0.0",
+    "pypdf>=4.0.0",
     "rich>=13.0.0",
     "chakpy>=0.1.0",
     "diskcache>=5.6.0",
@@ -43,6 +43,10 @@ dependencies = [
     # HeadingExtractor/HeadingCorrector (zag) require pdfminer; not declared by zagpy
     # previously pulled in transitively by mineru[all]; now pinned explicitly
     "pdfminer.six>=20231228",
+    # Additional runtime deps used directly but not previously declared
+    "tiktoken>=0.7.0",        # classic_processor.py: token counting
+    "openpyxl>=3.1.0",        # documents.py: Excel export
+    "loguru>=0.7.0",          # app/utils/logger.py
 ]
 
 [tool.uv.sources]
