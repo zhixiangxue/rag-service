@@ -91,6 +91,28 @@ _LLM_PROVIDER = LLM_URI.split("/")[0].split("@")[0].lower()
 LLM_API_KEY = _resolve_api_key(_LLM_PROVIDER, f"LLM_URI={LLM_URI}")
 
 # ============================================
+# Multimodal / Merge Model Configuration (for PyMuPDF4LLM table enhancement)
+# ============================================
+# Multimodal model: used for page-level table re-extraction (vision capability required).
+# Merge model: used for cross-page table merge decisions (text-only, lightweight is fine).
+# Both are OPTIONAL — table enhancement is auto-disabled when MULTIMODAL_MODEL_URI is not set.
+# Provider name → {PROVIDER}_API_KEY (same auto-resolution as LLM/EMBEDDING).
+MULTIMODAL_MODEL_URI = os.getenv("MULTIMODAL_MODEL_URI")  # e.g. bailian/qwen-vl-max
+if MULTIMODAL_MODEL_URI:
+    _MM_PROVIDER = MULTIMODAL_MODEL_URI.split("/")[0].split("@")[0].lower()
+    MULTIMODAL_API_KEY = _resolve_api_key(_MM_PROVIDER, f"MULTIMODAL_MODEL_URI={MULTIMODAL_MODEL_URI}")
+else:
+    MULTIMODAL_API_KEY = None
+
+MERGE_MODEL_URI = os.getenv("MERGE_MODEL_URI")  # e.g. bailian/qwen-plus
+if MERGE_MODEL_URI:
+    _MERGE_PROVIDER = MERGE_MODEL_URI.split("/")[0].split("@")[0].lower()
+    MERGE_API_KEY = _resolve_api_key(_MERGE_PROVIDER, f"MERGE_MODEL_URI={MERGE_MODEL_URI}")
+else:
+    # Fallback: reuse the same provider/key as multimodal (common case)
+    MERGE_API_KEY = MULTIMODAL_API_KEY
+
+# ============================================
 # Reranker Configuration
 # ============================================
 RERANKER_URI = require_env("RERANKER_URI")

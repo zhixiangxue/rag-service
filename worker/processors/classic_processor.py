@@ -324,13 +324,30 @@ class ClassicDocumentProcessor:
                 doc = reader.read(str(self.file_path), page_range=page_range)
             elif reader_name == ReaderType.PYMUPDF4LLM:
                 from zag.readers import PyMuPDF4LLMReader
-                from ..config import ANTHROPIC_API_KEY
-
-                console.print(
-                    f"PyMuPDF4LLM + Claude table enhancement{range_str}: {self.file_path.name}"
+                from ..config import (
+                    MULTIMODAL_MODEL_URI, MULTIMODAL_API_KEY,
+                    MERGE_MODEL_URI, MERGE_API_KEY,
                 )
+
+                # Table enhancement requires a multimodal model (vision capability).
+                # Auto-disabled when MULTIMODAL_MODEL_URI is not configured.
+                _enhance = bool(MULTIMODAL_MODEL_URI)
+                if _enhance:
+                    console.print(
+                        f"PyMuPDF4LLM + table enhancement{range_str}: {self.file_path.name} "
+                        f"[dim](multimodal: {MULTIMODAL_MODEL_URI})[/dim]"
+                    )
+                else:
+                    console.print(
+                        f"PyMuPDF4LLM{range_str}: {self.file_path.name} "
+                        f"[dim](table enhancement disabled: MULTIMODAL_MODEL_URI not set)[/dim]"
+                    )
                 reader = PyMuPDF4LLMReader(
-                    enhance_tables=True, anthropic_api_key=ANTHROPIC_API_KEY
+                    enhance_tables=_enhance,
+                    multimodal_model=MULTIMODAL_MODEL_URI,
+                    multimodal_api_key=MULTIMODAL_API_KEY,
+                    merge_model=MERGE_MODEL_URI,
+                    merge_api_key=MERGE_API_KEY,
                 )
                 doc = reader.read(str(self.file_path), page_range=page_range)
             else:

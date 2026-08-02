@@ -59,9 +59,14 @@ def read_document(file_path: Path, enhance: bool = False, page_range=None):
     elif ext == ".pdf":
         from zag.readers.pymupdf4llm import PyMuPDF4LLMReader
         if enhance:
-            api_key = os.getenv("ANTHROPIC_API_KEY")
-            console.print(f"Reading PDF with PyMuPDF4LLM + Claude table enhancement: {file_path.name}")
-            reader = PyMuPDF4LLMReader(enhance_tables=True, anthropic_api_key=api_key)
+            mm_model = os.getenv("MULTIMODAL_MODEL_URI", "bailian/qwen-vl-max")
+            mm_key = os.getenv("MULTIMODAL_API_KEY") or os.getenv("BAILIAN_API_KEY")
+            console.print(f"Reading PDF with PyMuPDF4LLM + table enhancement: {file_path.name}")
+            reader = PyMuPDF4LLMReader(
+                enhance_tables=True,
+                multimodal_model=mm_model,
+                multimodal_api_key=mm_key,
+            )
         else:
             console.print(f"Reading PDF with PyMuPDF4LLM: {file_path.name}")
             reader = PyMuPDF4LLMReader()

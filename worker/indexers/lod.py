@@ -26,7 +26,9 @@ from ..config import (
     MEILISEARCH_HOST, MEILISEARCH_API_KEY,
     ARCHIVES_DIR,
     ANTHROPIC_API_KEY,
-) 
+    MULTIMODAL_MODEL_URI, MULTIMODAL_API_KEY,
+    MERGE_MODEL_URI, MERGE_API_KEY,
+)
 
 console = Console()
 
@@ -189,7 +191,21 @@ async def index_lod(
         # Claude output is already well-structured, skip HeadingCorrector
     elif reader_name == ReaderType.PYMUPDF4LLM:
         from zag.readers import PyMuPDF4LLMReader
-        pdf_reader_obj = PyMuPDF4LLMReader()
+
+        # Table enhancement requires a multimodal model (vision capability).
+        # Auto-disabled when MULTIMODAL_MODEL_URI is not configured.
+        _enhance = bool(MULTIMODAL_MODEL_URI)
+        if _enhance:
+            console.print(f"  PyMuPDF4LLM + table enhancement (multimodal: {MULTIMODAL_MODEL_URI})")
+        else:
+            console.print("  PyMuPDF4LLM (table enhancement disabled: MULTIMODAL_MODEL_URI not set)")
+        pdf_reader_obj = PyMuPDF4LLMReader(
+            enhance_tables=_enhance,
+            multimodal_model=MULTIMODAL_MODEL_URI,
+            multimodal_api_key=MULTIMODAL_API_KEY,
+            merge_model=MERGE_MODEL_URI,
+            merge_api_key=MERGE_API_KEY,
+        )
         doc = pdf_reader_obj.read(str(file_path))
     else:
         from zag.readers import MinerUReader
