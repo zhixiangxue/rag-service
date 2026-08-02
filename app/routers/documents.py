@@ -389,15 +389,23 @@ def _detect_scanned_pdf(file_path: str) -> tuple[bool, str]:
         return True, f"Rejected: Failed to parse PDF file — {e}. The file may be corrupted or in an unsupported format."
 
 
-# NOTE: This endpoint is intentionally offline — no @router.post decorator.
-# Local file upload via multipart form has been disabled.
-# Use POST /from-s3 to register documents via S3 URL instead.
+@router.post("/upload", response_model=ApiResponse[dict])
 async def upload_file(
     dataset_id: str,
     file: UploadFile = File(...),
-    metadata: str = Form(...)
+    metadata: str = Form(...),
 ):
-    """Upload file to dataset."""
+    """Upload a file directly via multipart/form-data and register it in the dataset.
+
+    Identical ingestion flow to POST /from-s3: save -> compute content hash ->
+    insert record. doc_id = content hash, same dedup logic applies.
+    The only difference is the file source — a direct upload instead of an S3 URL.
+
+    Form fields:
+        file: Binary file content.
+        metadata: JSON string with the same structure as from-s3
+                  (e.g. {"lender": "...", "guideline": "FannieMae", "overlays": [...]}).
+    """
     # Parse metadata string (form data is always str)
     try:
         metadata_dict = json.loads(metadata)
@@ -409,6 +417,9 @@ async def upload_file(
         _validate_metadata(metadata_dict)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required in the upload")
 
     # Save file using storage abstraction
     storage = get_storage()
