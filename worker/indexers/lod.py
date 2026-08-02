@@ -7,7 +7,7 @@ from rich.panel import Panel
 from rich.table import Table
 from typing import Dict, Any, Optional
 
-from zag.readers import MinerUReader, MarkdownTreeReader
+from zag.readers import MarkdownTreeReader
 from zag.extractors import CompressionExtractor
 from zag.postprocessors.correctors import HeadingCorrector
 from zag.schemas import BaseUnit, ContentView, LODLevel, TextUnit, UnitMetadata
@@ -192,6 +192,8 @@ async def index_lod(
         pdf_reader_obj = PyMuPDF4LLMReader()
         doc = pdf_reader_obj.read(str(file_path))
     else:
+        from zag.readers import MinerUReader
+
         pdf_reader_obj = MinerUReader(backend="pipeline")
         doc = pdf_reader_obj.read(str(file_path))
         # Apply heading correction

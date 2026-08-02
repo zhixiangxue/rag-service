@@ -34,7 +34,6 @@ from pydantic import BaseModel
 from functools import wraps
 
 # Zag imports
-from zag.readers import MinerUReader
 from zag.splitters import MarkdownHeaderSplitter, TextSplitter, TableSplitter, RecursiveMergingSplitter
 from zag.extractors import KeywordExtractor, TableEnricher, TableSummarizer
 from zag.postprocessors.correctors import HeadingCorrector
