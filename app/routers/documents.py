@@ -758,7 +758,7 @@ def get_document_views(
 
     # Fetch LOD unit via QdrantVectorStore.fetch
     try:
-        embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
+        embedder = Embedder(config.EMBEDDING_URI, api_key=config.EMBEDDING_API_KEY)
         vector_store = QdrantVectorStore.server(
             host=config.VECTOR_STORE_HOST,
             port=config.VECTOR_STORE_PORT,
@@ -1064,7 +1064,7 @@ def delete_document(dataset_id: str, doc_id: str):
         
         embedder = Embedder(
             config.EMBEDDING_URI,
-            api_key=config.OPENAI_API_KEY
+            api_key=config.EMBEDDING_API_KEY
         )
         vector_store = QdrantVectorStore.server(
             host=config.VECTOR_STORE_HOST,

@@ -52,8 +52,7 @@ def _print_worker_config() -> None:
     print(f"  MEILISEARCH_API_KEY: {'set' if config.MEILISEARCH_API_KEY else 'not set'}")
     print(f"\n[Embedding / LLM]")
     print(f"  EMBEDDING_URI: {config.EMBEDDING_URI}")
-    print(f"  LLM_PROVIDER: {config.LLM_PROVIDER}")
-    print(f"  LLM_MODEL: {config.LLM_MODEL}")
+    print(f"  LLM_URI: {config.LLM_URI}")
     print(f"\n[Processing]")
     print(f"  USE_GPU: {config.USE_GPU}")
     print(f"  NUM_THREADS: {config.NUM_THREADS}")
@@ -101,11 +100,9 @@ def _check_worker_dependencies() -> None:
 
     def _check_embedding():
         embedding_uri = config.EMBEDDING_URI
-        if embedding_uri != "openai/text-embedding-3-small":
-            return False, f"[Embedding] EMBEDDING_URI must be 'openai/text-embedding-3-small', got '{embedding_uri}'"
-        if config.OPENAI_API_KEY:
-            return True, f"[Embedding] OPENAI_API_KEY set, model: {embedding_uri}"
-        return False, "[Embedding] OPENAI_API_KEY is not set"
+        if config.EMBEDDING_API_KEY:
+            return True, f"[Embedding] EMBEDDING_API_KEY set, model: {embedding_uri}"
+        return False, f"[Embedding] EMBEDDING_API_KEY not set for {embedding_uri}"
 
     def _check_gpu():
         if not config.USE_GPU:

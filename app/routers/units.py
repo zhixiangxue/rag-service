@@ -49,7 +49,7 @@ def _get_vector_store(dataset_id: str, with_embedder: bool = False):
             # Needs embedder for re-embedding; create a one-off instance.
             from zag.storages.vector import QdrantVectorStore
             from zag.embedders import Embedder
-            embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
+            embedder = Embedder(config.EMBEDDING_URI, api_key=config.EMBEDDING_API_KEY)
             return QdrantVectorStore.server(
                 host=config.VECTOR_STORE_HOST,
                 port=config.VECTOR_STORE_PORT,

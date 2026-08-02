@@ -48,7 +48,7 @@ from zag.schemas.unit import TextUnit, TableUnit
 from zag.utils.hash import calculate_file_hash
 
 from ..constants import ProcessingMode, ReaderType
-from ..config import LLM_PROVIDER, LLM_MODEL, LLM_API_KEY, ARCHIVES_DIR
+from ..config import LLM_URI, LLM_API_KEY, ARCHIVES_DIR
 
 console = Console()
 
@@ -343,7 +343,7 @@ class ClassicDocumentProcessor:
                 doc = reader.read(str(self.file_path), page_range=page_range)
                 console.print("  Correcting headings...")
                 corrector = HeadingCorrector(
-                    llm_uri=f"{LLM_PROVIDER}/{LLM_MODEL}",
+                    llm_uri=LLM_URI,
                     api_key=LLM_API_KEY,
                     llm_correction=True,
                 )

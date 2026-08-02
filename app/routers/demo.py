@@ -20,14 +20,11 @@ router = APIRouter(prefix="/query", tags=["demo"])
 # Constants
 TOP_K = 20
 FINAL_TOP_K = 5
-RERANKER_MODEL = "cohere/rerank-english-v3.0"
-LLM_SELECTOR_URI = "openai/gpt-4o-mini"
-LLM_URI = "openai/gpt-4o"
 
 
 def _create_retriever(collection_name: str):
     """Create retriever for given collection (no caching)."""
-    embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
+    embedder = Embedder(config.EMBEDDING_URI, api_key=config.EMBEDDING_API_KEY)
     vector_store = QdrantVectorStore.server(
         host=config.VECTOR_STORE_HOST,
         port=config.VECTOR_STORE_PORT,
@@ -77,7 +74,7 @@ async def analyze_relevance(query: str, content: str) -> RelevanceAnalysis:
     try:
         import chak
         
-        conv = chak.Conversation(LLM_URI, api_key=config.OPENAI_API_KEY)
+        conv = chak.Conversation(config.LLM_URI, api_key=config.LLM_API_KEY)
         
         analysis_prompt = f"""Analyze the relevance between the query and retrieved content.
 
@@ -170,7 +167,7 @@ async def query_web(request: WebQueryRequest):
         # Stage 2: Reranking
         start_time = time.time()
         try:
-            reranker = Reranker(RERANKER_MODEL, api_key=config.COHERE_API_KEY)
+            reranker = Reranker(config.RERANKER_URI, api_key=config.RERANKER_API_KEY)
             results_reranked = reranker.rerank(
                 request.query,
                 results[:TOP_K],
@@ -185,7 +182,7 @@ async def query_web(request: WebQueryRequest):
         # Stage 3: LLM Selector
         start_time = time.time()
         try:
-            selector = LLMSelector(llm_uri=LLM_SELECTOR_URI, api_key=config.OPENAI_API_KEY)
+            selector = LLMSelector(llm_uri=config.LLM_URI, api_key=config.LLM_API_KEY)
             results = await selector.aprocess(request.query, results_reranked)
         except Exception as e:
             print(f"Warning: LLM Selector failed, using reranked results: {e}")

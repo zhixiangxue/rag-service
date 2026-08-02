@@ -22,26 +22,31 @@ else:
     sys.exit(1)
 
 
-def require_env(key: str, default_value: str = None) -> str:
-    """
-    Require an environment variable to be set.
-    
-    Args:
-        key: Environment variable name
-        default_value: Optional default value (if None, the variable is required)
-        
-    Returns:
-        The environment variable value
-        
-    Raises:
-        SystemExit: If required variable is not set
-    """
-    value = os.getenv(key, default_value)
+def require_env(key: str) -> str:
+    """Require an environment variable. Exit if not set."""
+    value = os.getenv(key)
     if value is None:
         print(f"[Config] ERROR: Required environment variable '{key}' is not set.")
         print(f"[Config] Please add '{key}' to your .env file.")
         sys.exit(1)
     return value
+
+
+def _resolve_api_key(provider: str, context: str) -> str:
+    """根据 provider 名称自动解析 {PROVIDER}_API_KEY 环境变量。
+
+    规范: provider 名称 = env var 前缀
+      deepseek  → DEEPSEEK_API_KEY
+      bailian   → BAILIAN_API_KEY
+      openai    → OPENAI_API_KEY
+    """
+    env_key = f"{provider.upper()}_API_KEY"
+    key = os.getenv(env_key)
+    if not key:
+        print(f"[Config] ERROR: {env_key} is not set (required by {context}).")
+        print(f"[Config] Please add '{env_key}' to your .env file.")
+        sys.exit(1)
+    return key
 
 # ============================================
 # Database Configuration
@@ -57,56 +62,52 @@ VECTOR_STORE_TYPE = require_env("VECTOR_STORE_TYPE")
 VECTOR_STORE_HOST = require_env("VECTOR_STORE_HOST")
 VECTOR_STORE_PORT = int(require_env("VECTOR_STORE_PORT"))
 VECTOR_STORE_GRPC_PORT = int(require_env("VECTOR_STORE_GRPC_PORT"))
-VECTOR_STORE_API_KEY = os.getenv("VECTOR_STORE_API_KEY") or None  # Optional (qdrant api_key)
+VECTOR_STORE_API_KEY = os.getenv("VECTOR_STORE_API_KEY") or None  # Optional
 
 # ============================================
 # Full-Text Search Configuration
 # ============================================
-MEILISEARCH_HOST = os.getenv("MEILISEARCH_HOST")
-MEILISEARCH_API_KEY = os.getenv("MEILISEARCH_API_KEY")  # Optional
+MEILISEARCH_HOST = require_env("MEILISEARCH_HOST")
+MEILISEARCH_API_KEY = require_env("MEILISEARCH_API_KEY")
 
 # ============================================
-# Graph Database Configuration
+# Graph Database Configuration (FalkorDB)
 # ============================================
-# Used by the /graph router (FalkorDB); optional with sane defaults
-FALKORDB_HOST = os.getenv("FALKORDB_HOST", "localhost")
-FALKORDB_PORT = int(os.getenv("FALKORDB_PORT", "6379"))
+FALKORDB_HOST = require_env("FALKORDB_HOST")
+FALKORDB_PORT = int(require_env("FALKORDB_PORT"))
 FALKORDB_PASSWORD = os.getenv("FALKORDB_PASSWORD") or None  # Optional
 
 # ============================================
-# Embedding & Reranker Configuration
+# Embedding Configuration
 # ============================================
 EMBEDDING_URI = require_env("EMBEDDING_URI")
-OPENAI_API_KEY = require_env("OPENAI_API_KEY")
-BAILIAN_API_KEY = os.getenv("BAILIAN_API_KEY")  # Optional
-COHERE_API_KEY = os.getenv("COHERE_API_KEY")  # Optional
-# Reranker configuration (used by query endpoints and demos)
-RERANKER_URI = os.getenv("RERANKER_URI", "cohere/rerank-english-v3.0")
+_EMBEDDING_PROVIDER = EMBEDDING_URI.split("/")[0].split("@")[0].lower()
+EMBEDDING_API_KEY = _resolve_api_key(_EMBEDDING_PROVIDER, f"EMBEDDING_URI={EMBEDDING_URI}")
+
+# ============================================
+# Reranker Configuration
+# ============================================
+RERANKER_URI = require_env("RERANKER_URI")
+_RERANKER_PROVIDER = RERANKER_URI.split("/")[0].split("@")[0].lower()
+RERANKER_API_KEY = _resolve_api_key(_RERANKER_PROVIDER, f"RERANKER_URI={RERANKER_URI}")
 
 # ============================================
 # LLM Configuration
 # ============================================
-LLM_PROVIDER = require_env("LLM_PROVIDER")
-LLM_MODEL = require_env("LLM_MODEL")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")  # Optional
-_LLM_KEY_MAP = {
-    "openai": OPENAI_API_KEY,
-    "anthropic": ANTHROPIC_API_KEY,
-    "bailian": BAILIAN_API_KEY,
-}
-LLM_API_KEY = _LLM_KEY_MAP.get(LLM_PROVIDER) or OPENAI_API_KEY
+LLM_URI = require_env("LLM_URI")
+_LLM_PROVIDER = LLM_URI.split("/")[0].split("@")[0].lower()
+LLM_API_KEY = _resolve_api_key(_LLM_PROVIDER, f"LLM_URI={LLM_URI}")
 
 # ============================================
 # File Storage Configuration
 # ============================================
 UPLOAD_DIR = require_env("UPLOAD_DIR")
 STORAGE_TYPE = require_env("STORAGE_TYPE")  # local, s3
-# S3 Configuration (if using S3)
+# S3 Configuration (only when STORAGE_TYPE=s3)
 S3_BUCKET = os.getenv("S3_BUCKET")
-S3_REGION = os.getenv("S3_REGION", "us-east-1")
+S3_REGION = os.getenv("S3_REGION")
 S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY")
 S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
-
 # AWS Credentials for S3 download
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
@@ -114,11 +115,8 @@ AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
 # ============================================
 # PDF Cache Configuration
 # ============================================
-# Directory where original PDFs are pre-placed as {doc_id}.pdf for fast locate lookup
-PDF_FILES_DIR = os.getenv("PDF_FILES_DIR", str(Path.home() / ".zag" / "cache" / "pdfs"))
-# Persistent diskcache for locate_pages: stores (full_text, page_positions) per doc_id
-# Pre-warm with: python playground/prewarm_locate_cache.py
-LOCATE_CACHE_DIR = os.getenv("LOCATE_CACHE_DIR", str(Path.home() / ".zag" / "cache" / "locate_diskcache"))
+PDF_FILES_DIR = Path(require_env("PDF_FILES_DIR")).expanduser()
+LOCATE_CACHE_DIR = Path(require_env("LOCATE_CACHE_DIR")).expanduser()
 
 # ============================================
 # API Server Configuration
@@ -130,7 +128,6 @@ API_PORT = int(require_env("API_PORT"))
 ACCESS_KEY = os.getenv("ACCESS_KEY", "")
 
 # Public-facing host for file URLs (used by distributed workers)
-# If not set, defaults to API_HOST (unless API_HOST is 0.0.0.0, then uses localhost)
 API_PUBLIC_HOST = os.getenv("API_PUBLIC_HOST") or (
     "localhost" if API_HOST == "0.0.0.0" else API_HOST
 )
@@ -138,12 +135,11 @@ API_PUBLIC_HOST = os.getenv("API_PUBLIC_HOST") or (
 # ============================================
 # Evaluation Service Configuration
 # ============================================
-# Optional: POST doc_id + file URL to this service after document processing completes
-EVAL_SERVICE_URL = os.getenv("EVAL_SERVICE_URL")  # Optional, leave empty to disable
+EVAL_SERVICE_URL = os.getenv("EVAL_SERVICE_URL")  # Optional
 
 # ============================================
 # Redis / Dramatiq Configuration
 # ============================================
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6380"))
+REDIS_HOST = require_env("REDIS_HOST")
+REDIS_PORT = int(require_env("REDIS_PORT"))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None  # Optional

@@ -17,7 +17,7 @@ from .extractor import MortgageProgramExtractor
 from domain.mortgage.graph import FullExtractionResult
 from worker.constants import ProcessingMode
 from worker.config import (
-    LLM_PROVIDER, LLM_MODEL, LLM_API_KEY,
+    LLM_URI, LLM_API_KEY,
     FALKORDB_HOST, FALKORDB_PORT, FALKORDB_PASSWORD,
     MAX_PAGES_PER_PART,
 )
@@ -154,7 +154,7 @@ async def index_graph(
     console.print("\n[bold white on blue] Step 3 [/bold white on blue] Extracting program structure...")
 
     extractor = MortgageProgramExtractor(
-        llm_uri=f"{LLM_PROVIDER}/{LLM_MODEL}",
+        llm_uri=LLM_URI,
         api_key=LLM_API_KEY,
     )
     result = await extractor.extract(
@@ -223,7 +223,7 @@ async def _read_document(file_path: Path, page_range: Optional[Tuple[int, int]] 
         # Apply heading correction
         console.print("  🔧 Correcting headings...")
         corrector = HeadingCorrector(
-            llm_uri=f"{LLM_PROVIDER}/{LLM_MODEL}",
+            llm_uri=LLM_URI,
             api_key=LLM_API_KEY,
             llm_correction=True
         )

@@ -19,8 +19,8 @@ from zag.indexers import FullTextIndexer
 from ..constants import ProcessingMode, ReaderType
 from ..exceptions import ProcessingError, ProcessingErrorCode
 from ..config import (
-    LLM_PROVIDER, LLM_MODEL, LLM_API_KEY,
-    EMBEDDING_URI, OPENAI_API_KEY,
+    LLM_URI, LLM_API_KEY,
+    EMBEDDING_URI, EMBEDDING_API_KEY,
     VECTOR_STORE_HOST, VECTOR_STORE_PORT,
     VECTOR_STORE_API_KEY,
     MEILISEARCH_HOST, MEILISEARCH_API_KEY,
@@ -199,7 +199,7 @@ async def index_lod(
         # Apply heading correction
         console.print("  🔧 Correcting headings...")
         corrector = HeadingCorrector(
-            llm_uri=f"{LLM_PROVIDER}/{LLM_MODEL}",
+            llm_uri=LLM_URI,
             api_key=LLM_API_KEY,
             llm_correction=True
         )
@@ -212,7 +212,7 @@ async def index_lod(
 
     lod_full = doc.content
     
-    extractor = CompressionExtractor(f"{LLM_PROVIDER}/{LLM_MODEL}", api_key=LLM_API_KEY)
+    extractor = CompressionExtractor(LLM_URI, api_key=LLM_API_KEY)
     original_tokens = extractor.count_tokens(lod_full)
     
     console.print(f"[green]✓ PDF read successfully[/green]")
@@ -288,7 +288,7 @@ async def index_lod(
     
     try:
         tree_reader = MarkdownTreeReader(
-            llm_uri=f"{LLM_PROVIDER}/{LLM_MODEL}",
+            llm_uri=LLM_URI,
             api_key=LLM_API_KEY
         )
         lod_tree = await tree_reader.read(content=lod_full, generate_summaries=True)
@@ -339,7 +339,7 @@ async def index_lod(
     if on_progress:
         await on_progress(95)
     
-    embedder = Embedder(EMBEDDING_URI, api_key=OPENAI_API_KEY)
+    embedder = Embedder(EMBEDDING_URI, api_key=EMBEDDING_API_KEY)
     
     vector_store = QdrantVectorStore.server(
         host=VECTOR_STORE_HOST,

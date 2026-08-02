@@ -45,7 +45,7 @@ def _get_embedder() -> Any:
     """Return a cached Embedder singleton (created once, reused for all requests)."""
     global _embedder
     if _embedder is None:
-        _embedder = Embedder(config.EMBEDDING_URI, api_key=config.OPENAI_API_KEY)
+        _embedder = Embedder(config.EMBEDDING_URI, api_key=config.EMBEDDING_API_KEY)
     return _embedder
 
 
@@ -98,7 +98,7 @@ def _get_reranker() -> Any:
     """Return a cached Reranker singleton."""
     global _reranker
     if _reranker is None:
-        _reranker = Reranker(config.RERANKER_URI, api_key=config.COHERE_API_KEY)
+        _reranker = Reranker(config.RERANKER_URI, api_key=config.RERANKER_API_KEY)
     return _reranker
 
 
@@ -513,7 +513,7 @@ async def query_tree_simple(dataset_id: str, request: TreeQueryRequest):
         from zag.retrievers.tree import SimpleRetriever
         retriever = SimpleRetriever(
             vector_store=vector_store,
-            llm_uri=f"{config.LLM_PROVIDER}/{config.LLM_MODEL}",
+            llm_uri=config.LLM_URI,
             api_key=config.LLM_API_KEY,
             max_depth=request.max_depth
         )
@@ -614,7 +614,7 @@ async def query_tree_skeleton(dataset_id: str, request: TreeQueryRequest):
         vector_store = await asyncio.to_thread(_get_vector_store, collection_name)
         from zag.retrievers.tree import SkeletonRetriever
         retriever = SkeletonRetriever(
-            llm_uri=f"{config.LLM_PROVIDER}/{config.LLM_MODEL}",
+            llm_uri=config.LLM_URI,
             api_key=config.LLM_API_KEY,
             verbose=False,
             vector_store=vector_store

@@ -139,7 +139,7 @@ def _ensure_vector_collection(collection_name: str, engine: str):
     
     embedder = Embedder(
         config.EMBEDDING_URI,
-        api_key=config.OPENAI_API_KEY
+        api_key=config.EMBEDDING_API_KEY
     )
     
     # QdrantVectorStore.server will create collection if not exists via _ensure_collection
@@ -338,7 +338,7 @@ def delete_dataset(dataset_id: str):
     try:
         embedder = Embedder(
             config.EMBEDDING_URI,
-            api_key=config.OPENAI_API_KEY
+            api_key=config.EMBEDDING_API_KEY
         )
         vector_store = QdrantVectorStore.server(
             host=config.VECTOR_STORE_HOST,

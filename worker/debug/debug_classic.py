@@ -40,7 +40,7 @@ from worker.indexers.classic import index_classic
 
 # ========== Configuration ==========
 DEBUG_WORKSPACE_ROOT = Path("./.workspace/debug")
-LLM_URI = f"{config.LLM_PROVIDER}/{config.LLM_MODEL}"
+LLM_URI = config.LLM_URI
 VECTOR_STORE_GRPC_PORT = int(os.getenv("VECTOR_STORE_GRPC_PORT", "16334"))
 COLLECTION_NAME = "debug_collection"
 MEILISEARCH_INDEX_NAME = "debug_index"
@@ -155,7 +155,7 @@ async def main():
     
     # Show config
     console.print("[bold]Configuration:[/bold]")
-    console.print(f"  LLM: {config.LLM_PROVIDER}/{config.LLM_MODEL}")
+    console.print(f"  LLM: {config.LLM_URI}")
     console.print(f"  Embedding: {config.EMBEDDING_URI}")
     console.print(f"  Vector Store: {config.VECTOR_STORE_HOST}:{config.VECTOR_STORE_PORT} (gRPC: {VECTOR_STORE_GRPC_PORT})")
     console.print(f"  Meilisearch: {config.MEILISEARCH_HOST}")
