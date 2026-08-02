@@ -172,7 +172,8 @@ async def index_classic(
     try:
         await processor.build_fulltext_index(
             meilisearch_url=MEILISEARCH_HOST,
-            index_name=meilisearch_index_name
+            index_name=meilisearch_index_name,
+            api_key=MEILISEARCH_API_KEY,
         )
         console.print(f"  ✅ Fulltext index built")
     except Exception as e:

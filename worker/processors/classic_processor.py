@@ -978,7 +978,8 @@ class ClassicDocumentProcessor:
         self,
         meilisearch_url: str,
         index_name: str = "mortgage_guidelines",
-        primary_key: str = "unit_id"
+        primary_key: str = "unit_id",
+        api_key: Optional[str] = None,
     ) -> Optional[FullTextIndexer]:
         """
         Build fulltext index with Meilisearch (best effort, failure is acceptable)
@@ -1012,7 +1013,8 @@ class ClassicDocumentProcessor:
             fulltext_indexer = FullTextIndexer(
                 url=meilisearch_url,
                 index_name=index_name,
-                primary_key=primary_key
+                primary_key=primary_key,
+                api_key=api_key,
             )
 
             # Note: Meilisearch uses upsert by default, so we don't need to delete old data
