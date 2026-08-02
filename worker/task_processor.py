@@ -73,7 +73,7 @@ async def download_file(file_url: str, dest_path: Path) -> None:
     """Download file from HTTP URL to local path."""
     console.print(f"[dim]Downloading file from: {file_url}[/dim]")
     async with httpx.AsyncClient(timeout=300.0) as client:
-        response = await client.get(file_url)
+        response = await client.get(file_url, headers=config.API_HEADERS)
         response.raise_for_status()
 
         # Create parent directory if not exists
@@ -160,7 +160,10 @@ async def process_single_task(task: Dict[str, Any]) -> int:
         
         # Get dataset collection_name
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(f"{api_base_url}/datasets/{dataset_id}")
+            response = await client.get(
+                f"{api_base_url}/datasets/{dataset_id}",
+                headers=config.API_HEADERS,
+            )
             response.raise_for_status()
             dataset_info = response.json()["data"]
         
@@ -296,13 +299,19 @@ async def process_single_task(task: Dict[str, Any]) -> int:
         # If so, cancel it so it can be retried without manual intervention
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(f"{api_base_url}/tasks/{task_id}")
+                response = await client.get(
+                    f"{api_base_url}/tasks/{task_id}",
+                    headers=config.API_HEADERS,
+                )
                 if response.status_code == 200:
                     current_task = response.json().get("data")
                     if current_task and current_task.get("status") == TaskStatus.PROCESSING:
                         console.print("[yellow]Task still in PROCESSING state, cancelling...[/yellow]")
                         # Use the cancel API instead of manually updating status
-                        cancel_response = await client.post(f"{api_base_url}/tasks/{task_id}/cancel")
+                        cancel_response = await client.post(
+                            f"{api_base_url}/tasks/{task_id}/cancel",
+                            headers=config.API_HEADERS,
+                        )
                         if cancel_response.status_code == 200:
                             console.print("[green]Task cancelled successfully[/green]")
         except Exception as e:
