@@ -44,6 +44,7 @@ dependencies = [
 
 [tool.uv.sources]
 zagpy = { git = "https://github.com/zhixiangxue/zag-ai.git" }
+chakpy = { git = "https://github.com/zhixiangxue/chak-ai.git" }
 
 [project.optional-dependencies]
 dev = [
