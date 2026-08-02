@@ -51,14 +51,32 @@ def _invalidate_query_cache(dataset_id: str):
         pass
 
 
+def _existing_dataset_response(row: dict) -> ApiResponse[DatasetResponse]:
+    """Build a 200 'already exists' response from an existing dataset row."""
+    config_data = json.loads(row["config"]) if row["config"] else None
+    data = DatasetResponse(
+        dataset_id=str(row["id"]),
+        collection_name=row["name"],
+        name=row["name"],
+        description=row["description"],
+        engine=row["engine"],
+        config=config_data,
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+    return ApiResponse(success=True, code=200, message="Dataset already exists", data=data)
+
+
 @router.post("", response_model=ApiResponse[DatasetResponse])
 def create_dataset(dataset: DatasetCreate):
     """Create a new dataset and corresponding vector store collection.
     
-    Safe creation logic:
-    1. If caller supplies dataset_id and it already exists → 409 Conflict
-    2. If dataset exists in DB (matched by name): verify vector collection exists, return existing
-    3. If dataset not in DB: write to DB, then verify/create vector collection
+    Creation logic (create-or-get semantics):
+    1. If caller supplies dataset_id and it already exists:
+       - name matches  → idempotent, return existing record (200)
+       - name differs   → 409 Conflict (likely misuse)
+    2. If dataset exists in DB (matched by name): return existing record (200)
+    3. Otherwise: write to DB, then ensure/create vector collection
     
     When dataset_id is omitted, a random nanoid is generated (backward-compatible).
     """
@@ -69,13 +87,24 @@ def create_dataset(dataset: DatasetCreate):
     conn = get_connection()
     repo = DatasetRepository(conn)
 
-    # ── Step 1: caller-specified dataset_id conflict check ────────────
-    if dataset.dataset_id is not None and repo.exists(dataset.dataset_id):
-        conn.close()
-        raise HTTPException(
-            status_code=409,
-            detail=f"dataset_id '{dataset.dataset_id}' already exists"
-        )
+    # ── Step 1: caller-specified dataset_id — create-or-get / conflict ─
+    if dataset.dataset_id is not None:
+        existing_by_id = repo.get(dataset.dataset_id)
+        if existing_by_id is not None:
+            if existing_by_id["name"] == dataset.name:
+                # Idempotent: same id + same name → return existing record
+                conn.close()
+                _ensure_vector_collection(dataset.name, dataset.engine)
+                return _existing_dataset_response(existing_by_id)
+            # id taken but name differs → likely misuse, refuse to overwrite
+            conn.close()
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"dataset_id '{dataset.dataset_id}' already exists "
+                    f"with a different name ('{existing_by_id['name']}')"
+                ),
+            )
 
     # ── Step 2: name-based create-or-get (existing behaviour) ─────────
     existing_row = repo.get_by_name(dataset.name)
@@ -83,19 +112,7 @@ def create_dataset(dataset: DatasetCreate):
     if existing_row:
         conn.close()
         _ensure_vector_collection(dataset.name, dataset.engine)
-
-        config_data = json.loads(existing_row["config"]) if existing_row["config"] else None
-        data = DatasetResponse(
-            dataset_id=str(existing_row["id"]),
-            collection_name=existing_row["name"],
-            name=existing_row["name"],
-            description=existing_row["description"],
-            engine=existing_row["engine"],
-            config=config_data,
-            created_at=existing_row["created_at"],
-            updated_at=existing_row["updated_at"]
-        )
-        return ApiResponse(success=True, code=200, message="Dataset already exists", data=data)
+        return _existing_dataset_response(existing_row)
 
     # ── Step 3: create new dataset ─────────────────────────────────────
     timestamp = now()
