@@ -56,8 +56,11 @@ def create_dataset(dataset: DatasetCreate):
     """Create a new dataset and corresponding vector store collection.
     
     Safe creation logic:
-    1. If dataset exists in DB: verify vector collection exists, create if missing
-    2. If dataset not in DB: write to DB, then verify/create vector collection
+    1. If caller supplies dataset_id and it already exists → 409 Conflict
+    2. If dataset exists in DB (matched by name): verify vector collection exists, return existing
+    3. If dataset not in DB: write to DB, then verify/create vector collection
+    
+    When dataset_id is omitted, a random nanoid is generated (backward-compatible).
     """
     from zag.storages.vector import QdrantVectorStore
     from zag.embedders import Embedder
@@ -66,6 +69,15 @@ def create_dataset(dataset: DatasetCreate):
     conn = get_connection()
     repo = DatasetRepository(conn)
 
+    # ── Step 1: caller-specified dataset_id conflict check ────────────
+    if dataset.dataset_id is not None and repo.exists(dataset.dataset_id):
+        conn.close()
+        raise HTTPException(
+            status_code=409,
+            detail=f"dataset_id '{dataset.dataset_id}' already exists"
+        )
+
+    # ── Step 2: name-based create-or-get (existing behaviour) ─────────
     existing_row = repo.get_by_name(dataset.name)
 
     if existing_row:
@@ -85,9 +97,10 @@ def create_dataset(dataset: DatasetCreate):
         )
         return ApiResponse(success=True, code=200, message="Dataset already exists", data=data)
 
+    # ── Step 3: create new dataset ─────────────────────────────────────
     timestamp = now()
     config_json = json.dumps(dataset.config) if dataset.config else None
-    dataset_id = generate_id()
+    dataset_id = dataset.dataset_id if dataset.dataset_id is not None else generate_id()
 
     try:
         repo.create(dataset_id, dataset.name, dataset.description, dataset.engine, config_json, timestamp)

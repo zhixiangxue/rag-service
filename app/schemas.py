@@ -1,5 +1,7 @@
 """Pydantic schemas for API request/response."""
-from pydantic import BaseModel, Field, model_validator
+import re
+
+from pydantic import BaseModel, Field, model_validator, field_validator
 from typing import Optional, Dict, Any, List, TypeVar, Generic
 from datetime import datetime
 from enum import Enum
@@ -40,11 +42,30 @@ class MessageResponse(BaseModel):
 
 # ============ Dataset ============
 
+_DATASET_ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
+
+
 class DatasetCreate(BaseModel):
     name: str
+    dataset_id: Optional[str] = Field(
+        default=None,
+        description="Caller-specified dataset ID. If omitted, a random ID is generated. "
+                    "Allowed: [a-zA-Z0-9_-], length 1–64."
+    )
     description: Optional[str] = None
     engine: str = "qdrant"  # Vector store engine: qdrant, chroma, milvus, etc.
     config: Optional[Dict[str, Any]] = None
+
+    @field_validator("dataset_id")
+    @classmethod
+    def _validate_dataset_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        if not _DATASET_ID_RE.match(v):
+            raise ValueError(
+                "dataset_id must be 1–64 characters and contain only [a-zA-Z0-9_-]"
+            )
+        return v
 
 
 class DatasetUpdate(BaseModel):
