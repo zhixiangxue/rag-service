@@ -2,7 +2,7 @@
 name = "rag-service"
 version = "0.1.0"
 description = "RAG service layer built on top of Zag framework"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "zagpy",
     "markdown>=3.3.6",
